@@ -44,6 +44,40 @@ function ioOf(files: Record<string, string> = {}, directories: readonly string[]
   }
 }
 
+/**
+ * A filesystem whose reads are recorded, so a test can assert that a missing
+ * file is never read rather than merely tolerated.
+ */
+function recordingIo(files: Record<string, string>, directories: readonly string[] = []): ProjectIo & { readonly reads: string[] } {
+  const base = ioOf(files, directories)
+  const reads: string[] = []
+  return {
+    isFile: base.isFile,
+    listDirectory: base.listDirectory,
+    readText: (path) => { reads.push(path); return base.readText(path) },
+    reads,
+  }
+}
+
+test('describeProjectEntry reads only the settings script a root actually ships', () => {
+  // Both names are legitimate; a root ships one. Probing by reading would raise
+  // an error per project on every listing, which is what the log showed for a
+  // workspace of a hundred repositories.
+  const gradleKts = recordingIo({ [at('Alpha', 'settings.gradle.kts')]: 'rootProject.name = "Alpha"' })
+  assert.equal(describeProjectEntry(at('Alpha'), 'Alpha', gradleKts).name, 'Alpha')
+  assert.deepEqual(gradleKts.reads, [at('Alpha', 'settings.gradle.kts')])
+
+  const gradleGroovy = recordingIo({ [at('Beta', 'settings.gradle')]: "rootProject.name = 'Beta'" })
+  assert.equal(describeProjectEntry(at('Beta'), 'Beta', gradleGroovy).name, 'Beta')
+  assert.deepEqual(gradleGroovy.reads, [at('Beta', 'settings.gradle')])
+})
+
+test('describeProjectEntry reads nothing for a build that ships no settings script', () => {
+  const io = recordingIo({ [at('Gamma', 'build.gradle')]: '' })
+  assert.equal(describeProjectEntry(at('Gamma'), 'Gamma', io).name, 'Gamma')
+  assert.deepEqual(io.reads, [])
+})
+
 test('discoverProjects reports the enclosing build when the Session sits inside one', () => {
   const io = ioOf({
     [at('settings.gradle.kts')]: '',
