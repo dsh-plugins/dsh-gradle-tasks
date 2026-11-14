@@ -6,6 +6,7 @@
  * without a real build, and so the Host can feed the same logic from any
  * execution world.
  */
+import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join } from 'node:path'
 import type { GradleProjectInfo, GradleTask, GradleTaskGroup } from './shared/protocol.ts'
 
@@ -53,6 +54,14 @@ export interface ProjectIo {
   isFile(path: string): boolean
   /** Read a UTF-8 text file, or undefined when it cannot be read. */
   readText(path: string): string | undefined
+  /** Entries of one directory. */
+  listDirectory(path: string): readonly DirectoryEntry[]
+}
+
+/** One directory entry, as the configuration walk needs to see it. */
+export interface DirectoryEntry {
+  readonly name: string
+  readonly isDirectory: boolean
 }
 
 /** Failures worth reporting with the exact path that caused them. */
@@ -283,6 +292,102 @@ export function gradleArgv(
  */
 export function isTaskPath(taskPath: string): boolean {
   return /^:?[\w.-]+(?::[\w.-]+)*$/.test(taskPath)
+}
+
+/** Directory names the configuration walk never enters. */
+const PRUNED_DIRECTORIES = new Set([
+  'build', 'out', 'target', 'bin', 'obj', 'node_modules', 'vendor',
+  '.git', '.gradle', '.idea', '.vscode', '.settings',
+])
+
+/**
+ * File names that change what a configuration phase produces, wherever they
+ * appear: every subproject's scripts, the settings scripts, the properties
+ * files Gradle reads, and the version catalogue.
+ */
+const CONFIGURATION_FILES = new Set([
+  'build.gradle', 'build.gradle.kts',
+  'settings.gradle', 'settings.gradle.kts',
+  'gradle.properties', 'gradle-wrapper.properties',
+  'libs.versions.toml',
+])
+
+/** How deep the configuration walk descends below the build root. */
+const MAX_INPUT_DEPTH = 8
+
+/** How many configuration files one fingerprint reads. */
+const MAX_INPUT_FILES = 2000
+
+/** One configuration input: a project-relative path and the digest of its bytes. */
+export interface ConfigurationInput {
+  /** Path relative to the build root, always with forward slashes. */
+  readonly path: string
+  /** Hex SHA-1 of the file's UTF-8 text. */
+  readonly digest: string
+}
+
+/**
+ * Collect every file whose content can change the tasks a build declares.
+ *
+ * The walk covers the whole build tree because subproject scripts and settings
+ * plugins shape the configuration as much as the root script does. Build
+ * outputs and editor state are pruned, since they change constantly and never
+ * affect which tasks exist. Order follows the directory listing; the
+ * fingerprint canonicalizes it.
+ * @param rootDir - build root returned by {@link findProjectRoot}.
+ * @param io - filesystem facts.
+ * @returns the inputs, one digest per accepted file.
+ */
+export function collectConfigurationInputs(rootDir: string, io: ProjectIo): ConfigurationInput[] {
+  const inputs: ConfigurationInput[] = []
+  const walk = (directory: string, depth: number, prefix: string): void => {
+    if (depth > MAX_INPUT_DEPTH) return
+    for (const entry of io.listDirectory(directory)) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory) {
+        if (!PRUNED_DIRECTORIES.has(entry.name)) walk(path, depth + 1, `${prefix}${entry.name}/`)
+        continue
+      }
+      if (!CONFIGURATION_FILES.has(entry.name)) continue
+      if (inputs.length >= MAX_INPUT_FILES) {
+        console.warn(`gradle-tasks: ${rootDir} has more than ${MAX_INPUT_FILES} configuration files; the cache may miss changes below ${prefix}`)
+        return
+      }
+      const text = io.readText(path)
+      if (text === undefined) continue
+      inputs.push({ path: `${prefix}${entry.name}`, digest: createHash('sha1').update(text).digest('hex') })
+    }
+  }
+  walk(rootDir, 0, '')
+  return inputs
+}
+
+/**
+ * The identity of one configuration: a digest over every input plus the
+ * conditions outside the tree that also change what Gradle configures.
+ *
+ * Both the platform and the JDK belong in it: the same scripts can register
+ * different tasks per operating system and toolchain, so a cached list is only
+ * valid for the combination it was produced under. Inputs are sorted here, so
+ * the identity depends on which files exist and what they hold, never on the
+ * order a directory listing happened to return.
+ * @param version - cache format version, so an upgrade invalidates old entries.
+ * @param inputs - inputs from {@link collectConfigurationInputs}.
+ * @param conditions - free-form conditions such as the platform and the JDK home.
+ * @returns hex SHA-1 identifying this exact configuration.
+ */
+export function fingerprintConfiguration(
+  version: number,
+  inputs: readonly ConfigurationInput[],
+  conditions: readonly string[],
+): string {
+  const hash = createHash('sha1')
+  hash.update(`dsh-gradle-tasks:${version}\0`)
+  for (const condition of conditions) hash.update(`${condition.length}:${condition}\0`)
+  for (const input of [...inputs].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)) {
+    hash.update(`${input.path.length}:${input.path}\0${input.digest}\0`)
+  }
+  return hash.digest('hex')
 }
 
 /**

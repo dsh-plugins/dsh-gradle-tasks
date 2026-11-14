@@ -22,6 +22,7 @@ declare const zh: {
     'status.scanned': string;
     'status.wrapper': string;
     'status.noWrapper': string;
+    'status.cachedAt': string;
     'tasks.filter': string;
     'tasks.empty': string;
     'tasks.ungrouped': string;

@@ -63,9 +63,17 @@ export function fetchState(locator: Locator): Promise<StateResponse> {
   return readJson<StateResponse>(locate('/state', locator))
 }
 
-/** Run Gradle's task report for the located project. */
-export function fetchTasks(locator: Locator, javaHome: string | null): Promise<TasksResponse> {
-  return readJson<TasksResponse>(locate('/tasks', locator, javaHome === null ? {} : { javaHome }))
+/**
+ * Run Gradle's task report for the located project.
+ * @param locator - Session or directory to inspect.
+ * @param javaHome - JDK to configure the build with.
+ * @param force - ignore the project's cache and configure the build again.
+ */
+export function fetchTasks(locator: Locator, javaHome: string | null, force: boolean): Promise<TasksResponse> {
+  const extra: Record<string, string> = {}
+  if (javaHome !== null) extra.javaHome = javaHome
+  if (force) extra.force = '1'
+  return readJson<TasksResponse>(locate('/tasks', locator, extra))
 }
 
 /** Start one task run. */

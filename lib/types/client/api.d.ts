@@ -19,8 +19,13 @@ export declare class TransportFailure extends Error {
 }
 /** Detect the project and enumerate JDKs. */
 export declare function fetchState(locator: Locator): Promise<StateResponse>;
-/** Run Gradle's task report for the located project. */
-export declare function fetchTasks(locator: Locator, javaHome: string | null): Promise<TasksResponse>;
+/**
+ * Run Gradle's task report for the located project.
+ * @param locator - Session or directory to inspect.
+ * @param javaHome - JDK to configure the build with.
+ * @param force - ignore the project's cache and configure the build again.
+ */
+export declare function fetchTasks(locator: Locator, javaHome: string | null, force: boolean): Promise<TasksResponse>;
 /** Start one task run. */
 export declare function startTaskRun(locator: Locator, taskPath: string, javaHome: string | null): Promise<RunResponse>;
 /** Ask the Host to terminate a run. */

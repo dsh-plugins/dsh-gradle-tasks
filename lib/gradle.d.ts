@@ -14,6 +14,13 @@ export interface ProjectIo {
     isFile(path: string): boolean;
     /** Read a UTF-8 text file, or undefined when it cannot be read. */
     readText(path: string): string | undefined;
+    /** Entries of one directory. */
+    listDirectory(path: string): readonly DirectoryEntry[];
+}
+/** One directory entry, as the configuration walk needs to see it. */
+export interface DirectoryEntry {
+    readonly name: string;
+    readonly isDirectory: boolean;
 }
 /** Failures worth reporting with the exact path that caused them. */
 export declare class GradlePathError extends Error {
@@ -117,6 +124,41 @@ export declare function gradleArgv(script: {
  * @returns true for a plain task path such as `build` or `:app:test`.
  */
 export declare function isTaskPath(taskPath: string): boolean;
+/** One configuration input: a project-relative path and the digest of its bytes. */
+export interface ConfigurationInput {
+    /** Path relative to the build root, always with forward slashes. */
+    readonly path: string;
+    /** Hex SHA-1 of the file's UTF-8 text. */
+    readonly digest: string;
+}
+/**
+ * Collect every file whose content can change the tasks a build declares.
+ *
+ * The walk covers the whole build tree because subproject scripts and settings
+ * plugins shape the configuration as much as the root script does. Build
+ * outputs and editor state are pruned, since they change constantly and never
+ * affect which tasks exist. Order follows the directory listing; the
+ * fingerprint canonicalizes it.
+ * @param rootDir - build root returned by {@link findProjectRoot}.
+ * @param io - filesystem facts.
+ * @returns the inputs, one digest per accepted file.
+ */
+export declare function collectConfigurationInputs(rootDir: string, io: ProjectIo): ConfigurationInput[];
+/**
+ * The identity of one configuration: a digest over every input plus the
+ * conditions outside the tree that also change what Gradle configures.
+ *
+ * Both the platform and the JDK belong in it: the same scripts can register
+ * different tasks per operating system and toolchain, so a cached list is only
+ * valid for the combination it was produced under. Inputs are sorted here, so
+ * the identity depends on which files exist and what they hold, never on the
+ * order a directory listing happened to return.
+ * @param version - cache format version, so an upgrade invalidates old entries.
+ * @param inputs - inputs from {@link collectConfigurationInputs}.
+ * @param conditions - free-form conditions such as the platform and the JDK home.
+ * @returns hex SHA-1 identifying this exact configuration.
+ */
+export declare function fingerprintConfiguration(version: number, inputs: readonly ConfigurationInput[], conditions: readonly string[]): string;
 /**
  * Keep the trailing part of a log, so a failure message stays readable.
  * @param text - full log.

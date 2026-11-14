@@ -127,6 +127,11 @@ function formatDuration(milliseconds: number): string {
   return `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`
 }
 
+/** A scan time in the reader's own locale and time zone. */
+function formatTimestamp(epochMilliseconds: number): string {
+  return new Date(epochMilliseconds).toLocaleString()
+}
+
 /** Filter tasks by a case-insensitive substring of path or description. */
 function filterGroups(groups: readonly GradleTaskGroup[], filter: string): GradleTaskGroup[] {
   const needle = filter.trim().toLowerCase()
@@ -151,6 +156,7 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
   const [location, setLocation] = React.useState<Location | null>(null)
   const [groups, setGroups] = React.useState<readonly GradleTaskGroup[]>([])
   const [scanMs, setScanMs] = React.useState(0)
+  const [cacheHit, setCacheHit] = React.useState<number | null>(null)
   const [override, setOverride] = React.useState<string | null>(() => readStored(PATH_KEY))
   const [draft, setDraft] = React.useState('')
   const [javaHome, setJavaHome] = React.useState<string | null>(() => readStored(JAVA_KEY))
@@ -215,13 +221,20 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
    * report for the choice they ended on, never an earlier one arriving late.
    * @param path - directory override, or null for the Session's own.
    * @param jdk - JDK to run the report with.
+   * @param force - configure the build again instead of reusing the cache.
    * @param ticket - request identity taken before the call.
    */
-  const scan = React.useCallback(async (path: string | null, jdk: string | null, ticket: number): Promise<void> => {
-    const listing = await fetchTasks({ sessionId, path: path ?? undefined }, jdk)
+  const scan = React.useCallback(async (
+    path: string | null,
+    jdk: string | null,
+    force: boolean,
+    ticket: number,
+  ): Promise<void> => {
+    const listing = await fetchTasks({ sessionId, path: path ?? undefined }, jdk, force)
     if (ticket !== request.current) return
     if (!listing.ok) {
       setGroups([])
+      setCacheHit(null)
       setProblem({ code: listing.error, detail: listing.detail })
       if (listing.output !== undefined) {
         buffer.current = listing.output
@@ -232,10 +245,15 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
     setProblem(null)
     setGroups(listing.groups)
     setScanMs(listing.durationMs)
+    setCacheHit(listing.cached ? listing.scannedAt : null)
   }, [sessionId, flushOutput])
 
-  /** Ask the Host what this location is, then which tasks it declares. */
-  const load = React.useCallback(async (nextOverride: string | null): Promise<void> => {
+  /**
+   * Ask the Host what this location is, then which tasks it declares.
+   * @param nextOverride - directory override, or null for the Session's own.
+   * @param force - configure the build again instead of reusing the cache.
+   */
+  const load = React.useCallback(async (nextOverride: string | null, force: boolean): Promise<void> => {
     const ticket = request.current + 1
     request.current = ticket
     setBusy(true)
@@ -246,6 +264,7 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
       if (!state.ok) {
         setLocation(null)
         setGroups([])
+        setCacheHit(null)
         setProblem({ code: state.error, detail: state.detail })
         return
       }
@@ -258,10 +277,11 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
       }
       if (state.project === null) {
         setGroups([])
+        setCacheHit(null)
         setProblem({ code: 'not-gradle', detail: state.path })
         return
       }
-      await scan(nextOverride, chosen, ticket)
+      await scan(nextOverride, chosen, force, ticket)
     } catch (error) {
       if (ticket !== request.current) return
       setProblem(failureFrom(error))
@@ -275,7 +295,7 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
   React.useEffect(() => {
     if (!firstLoad.current) return
     firstLoad.current = false
-    void load(readStored(PATH_KEY))
+    void load(readStored(PATH_KEY), false)
   }, [load])
 
   /** Apply an explicit directory and remember it. */
@@ -284,7 +304,7 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
     const next = trimmed === '' ? null : trimmed
     setOverride(next)
     writeStored(PATH_KEY, next)
-    void load(next)
+    void load(next, true)
   }, [load])
 
   /** Choose a directory with the Host picker. */
@@ -307,7 +327,7 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
     const ticket = request.current + 1
     request.current = ticket
     setBusy(true)
-    void scan(override, next, ticket)
+    void scan(override, next, true, ticket)
       .catch((error: unknown) => {
         if (ticket !== request.current) return
         setProblem(failureFrom(error))
@@ -383,6 +403,7 @@ export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactEleme
     if (busy) return t('status.scanning')
     if (problem !== null) return describeFailure(problem, t)
     if (location === null) return t('status.noProject')
+    if (cacheHit !== null) return t('status.cachedAt', { time: formatTimestamp(cacheHit) })
     return t('status.scanned', { count: total, groups: groups.length, duration: formatDuration(scanMs) })
   })()
 

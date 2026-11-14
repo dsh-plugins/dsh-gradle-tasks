@@ -8,7 +8,7 @@
  * panel until the build ends.
  */
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -21,11 +21,14 @@ import {
   parseTaskDump,
   TASK_DUMP_SCRIPT,
   tailOf,
+  collectConfigurationInputs,
+  fingerprintConfiguration,
   isTaskPath,
   wrapperScriptFor,
   type ProjectIo,
 } from './gradle.ts'
 import { collectJdkVariables, hasJavaExecutable, readReleaseEntry } from './jdk.ts'
+import { CACHE_VERSION, readTaskCache, writeTaskCache } from './cache.ts'
 import { RunRegistry, type SpawnedProcess } from './runs.ts'
 import {
   ROUTE_BASE,
@@ -126,6 +129,18 @@ const projectIo: ProjectIo = {
       return undefined
     }
   },
+  listDirectory: (path) => {
+    try {
+      return readdirSync(path, { withFileTypes: true }).map(entry => ({
+        name: entry.name,
+        isDirectory: entry.isDirectory(),
+      }))
+    } catch (error) {
+      // The walk prunes what it cannot enter and keeps the inputs it already has.
+      console.warn(`gradle-tasks: cannot list ${path}`, error)
+      return []
+    }
+  },
 }
 
 /**
@@ -174,7 +189,7 @@ export function apply(ctx: Context): void {
       try {
         const query = queryOf(req)
         const path = resolveDirectory(host, query.get('sessionId'), query.get('path'))
-        sendJson(res, 200, await listTasks(host, path, await platform(), checkedJavaHome(query.get('javaHome')), scratch, scriptPath))
+        sendJson(res, 200, await listTasks(host, path, await platform(), checkedJavaHome(query.get('javaHome')), scratch, scriptPath, query.get('force') === '1'))
       } catch (error) {
         sendJson(res, 200, failureOf(error) satisfies TasksResponse)
       }
@@ -392,12 +407,17 @@ async function resolveScript(
 
 /**
  * Run Gradle with the initialization script and read back its task report.
+ *
+ * A cached list is returned when every configuration input still has the same
+ * content and the platform and JDK are unchanged, because only then can the
+ * previous scan be trusted to describe the same set of tasks.
  * @param host - Host context.
  * @param path - directory the panel inspected.
  * @param platform - execution platform.
  * @param javaHome - JDK to run this listing with, or null for the environment default.
  * @param scratch - directory for the temporary report.
  * @param scriptPath - the initialization script, written once at mount.
+ * @param force - ignore any cache and configure the build again.
  * @returns the grouped task report.
  */
 async function listTasks(
@@ -407,11 +427,31 @@ async function listTasks(
   javaHome: string | null,
   scratch: string,
   scriptPath: string,
+  force: boolean,
 ): Promise<TasksResponse> {
-  const started = Date.now()
   const root = findProjectRoot(path, projectIo)
   if (root === null) throw new RouteFailure('not-gradle', path)
   const project = describeProject(root, projectIo)
+  const fingerprint = fingerprintConfiguration(
+    CACHE_VERSION,
+    collectConfigurationInputs(project.rootDir, projectIo),
+    [platform, javaHome ?? '', scriptPath],
+  )
+  if (!force) {
+    const cached = readTaskCache(project.rootDir)
+    if (cached !== null && cached.fingerprint === fingerprint) {
+      return {
+        ok: true,
+        project,
+        groups: cached.groups,
+        durationMs: cached.durationMs,
+        output: '',
+        cached: true,
+        scannedAt: cached.scannedAt,
+      }
+    }
+  }
+  const started = Date.now()
   const script = await resolveScript(host, project, platform)
   const reportPath = join(scratch, `tasks-${randomUUID()}.txt`)
   const argv = gradleArgv(script, [
@@ -434,12 +474,17 @@ async function listTasks(
     const code = outcome.code === 0 ? 'no-report' : 'scan-failed'
     throw new RouteFailure(code, `${String(outcome.code ?? '?')}\n${tailOf(outcome.output, OUTPUT_TAIL_CHARS)}`)
   }
+  const groups = groupTasks(parseTaskDump(report))
+  const scannedAt = Date.now()
+  writeTaskCache(project.rootDir, { version: CACHE_VERSION, fingerprint, javaHome, groups, scannedAt, durationMs })
   return {
     ok: true,
     project,
-    groups: groupTasks(parseTaskDump(report)),
+    groups,
     durationMs,
     output: tailOf(outcome.output, OUTPUT_TAIL_CHARS),
+    cached: false,
+    scannedAt,
   }
 }
 
@@ -571,8 +616,15 @@ function rejected(host: HostContext, req: IncomingMessage, res: ServerResponse):
   return true
 }
 
-/** Write one JSON answer with the plugin's cache policy. */
+/**
+ * Write one JSON answer with the plugin's cache policy.
+ *
+ * A scan can outlive the browser request that asked for it, so the response
+ * may already be destroyed by the time the answer exists; writing then would
+ * surface as a stream error on a socket nobody is reading.
+ */
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
+  if (res.destroyed || res.writableEnded) return
   const body = JSON.stringify(payload)
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',

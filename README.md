@@ -12,10 +12,13 @@
 | --- | --- |
 | Gradle 工程检测 | 从当前会话目录向上查找 `settings.gradle[.kts]` / `build.gradle[.kts]`，命中最先出现的目录即为构建根目录；同时读取 wrapper 名称与 `distributionUrl` |
 | 任务枚举 | 注入初始化脚本 `dump-tasks.gradle`，在 `gradle.projectsEvaluated` 阶段遍历 `allprojects` 下全部 `tasks`，写回 `路径 / group / description` 三列清单 |
+| 任务清单缓存 | 清单写入项目自己的 `<项目根>/.gradle/dsh-gradle-tasks/tasks.json`；下次打开面板时按构建脚本内容做指纹比对，脚本没变就直接读取，实测 1.4 s → 6 ms |
+| 自动失效 | 指纹覆盖根目录与各子项目的 `build.gradle[.kts]`、`settings.gradle[.kts]`、`gradle.properties`、`gradle/wrapper/gradle-wrapper.properties`、`gradle/libs.versions.toml`；同时把平台与 JDK 计入指纹，换 JDK 即重扫 |
 | 分组显示 | 按任务的 `group` 分文件夹，文件夹按名称排序、「未分组」排在最后；文件夹内按 `description` 排序，无描述的任务排在后面，最终以任务路径兜底 |
 | wrapper 优先 | 优先使用项目自带的 `gradlew.bat` / `gradlew`；项目没有 wrapper 时才回退到 `PATH` 中的 `gradle`，两者都没有则明确报错 |
 | 双击运行 | 双击任务即运行；任务路径先按 `:project:task` 形式校验，`--init-script` 一类选项形状的输入在启动进程前就被拒绝 |
 | 实时输出 | 运行输出经 NDJSON 流回传，面板终端保留最近 30 万字符；构建结束即关闭响应，运行期间可「停止」终止整棵进程树 |
+| 手动重扫 | 标题栏的「重新扫描任务」与目录、JDK 的显式切换一律忽略缓存；只有面板首次加载会读取缓存 |
 | JDK 选择 | 扫描环境变量中的 `JAVA_HOME`、`JAVA_8`、`JAVA_17`… `JDK_HOME` 等，逐个校验 `bin/java[.exe]` 并读取 `release` 中的 `JAVA_VERSION`；默认选中 `JAVA_HOME`，切换后按新 JDK 重新扫描任务 |
 | 目录覆盖 | 面板标题栏可直接填写绝对路径，或调用宿主目录选择器，用于查看当前会话之外的项目；选择结果记入 `localStorage` |
 
@@ -74,6 +77,24 @@ dsh plugin --profile web add <本目录绝对路径>
 
 初始化脚本在构建配置完成后执行，因此插件注册的任务、settings 脚本注册的任务都在清单内。`help` 任务本身也会出现，属于 Gradle 的正常行为。
 
+### 任务清单缓存
+
+清单缓存在 `<项目根>/.gradle/dsh-gradle-tasks/tasks.json`：`.gradle` 是 Gradle 自己的构建内缓存目录，项目的 `.gitignore` 普遍已排除它，插件因此不需要在项目里再制造一个待清理的目录。
+
+命中条件是「配置指纹」相同，指纹由三部分组成：
+
+1. 递归扫描到的配置文件的 SHA-1，每个文件单独取摘要；
+2. 这些文件的相对路径；
+3. 执行平台与所选 JDK 的目录。
+
+扫描范围覆盖根目录与全部子项目，跳过 `build`、`out`、`target`、`.gradle`、`.idea`、`node_modules` 等目录，深度上限 8 层、文件数上限 2000 个（超出会在日志中提示「缓存可能漏掉某目录下的改动」，不会静默截断）。收录的文件名固定为 `build.gradle[.kts]`、`settings.gradle[.kts]`、`gradle.properties`、`gradle-wrapper.properties`、`libs.versions.toml`。
+
+平台与 JDK 进入指纹，是因为同一份脚本在不同操作系统与不同工具链下可能注册出不同的任务；不把它们算进去，换 JDK 后会读到一个语义上错误的清单。
+
+缓存条目带格式版本号 `version`，升级插件时递增即可让旧条目全部失效；版本或结构不符的条目按缺失处理并给出日志，随后那次扫描会重写它。写在只读卷上的项目会有一次失败日志，之后每次打开都重新扫描，功能不受影响。
+
+被中断的请求不会浪费：浏览器中途断开后，宿主端的 Gradle 仍会跑完并写入缓存，下一次打开即命中。
+
 ### 命令拼装
 
 Windows 上的 Gradle 入口都是批处理文件（项目的 `gradlew.bat`，以及 `PATH` 里 Gradle 发行版自带的 `gradle.bat`），Node 的子进程接口不能直接执行批处理，因此凡是 `.bat` / `.cmd` 一律经下面这条命令启动：
@@ -103,7 +124,8 @@ dsh-gradle-tasks/
 ├── docs/preview.svg          # 面板预览图
 ├── src/
 │   ├── index.ts              # 宿主端：路由、运行注册表装配、JDK 扫描
-│   ├── gradle.ts             # 工程定位、任务解析、分组排序、命令行拼装
+│   ├── gradle.ts             # 工程定位、任务解析、分组排序、命令行拼装、配置指纹
+│   ├── cache.ts              # 任务清单缓存的读写、校验与格式版本
 │   ├── jdk.ts                # 环境变量筛选、排序、release 读取
 │   ├── runs.ts               # 构建进程与输出转录
 │   ├── shared/protocol.ts    # 宿主与浏览器共用的线格式
@@ -113,7 +135,8 @@ dsh-gradle-tasks/
 
 ## 已知限制
 
-- 任务清单需要一次完整的 Gradle 配置阶段，首次扫描耗时与项目规模相当；扫描期间面板显示「正在扫描任务…」，可直接切换目录或 JDK 重新触发，迟到的旧结果会被丢弃。
+- 指纹只读取上面列出的那几类文件：任务清单还受插件版本、`~/.gradle/gradle.properties`、依赖版本变化等外部因素影响，这类改动需要点一次「重新扫描任务」。
+- 同一项目只保留一份清单，因此来回切换 JDK 会各自重扫一次；切回已用过的 JDK 不会命中旧的另一份。
 - 面板同一时刻只保留一条运行记录，新的运行会清空上一条输出。
 - 运行结束后保留的转录在宿主端 5 分钟内可重新附加，超过后需要重新运行。
 - 面板以当前用户的身份执行任意 Gradle 构建，其后果与本人在终端里执行 `gradlew` 相同。

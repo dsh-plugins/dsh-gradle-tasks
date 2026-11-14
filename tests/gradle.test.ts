@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  collectConfigurationInputs,
   describeProject,
   findProjectRoot,
+  fingerprintConfiguration,
   gradleArgv,
   groupTasks,
   isTaskPath,
@@ -15,10 +17,23 @@ import {
 } from '../src/gradle.ts'
 
 /** A fake filesystem: existing files keyed by exact path. */
-function ioOf(files: Record<string, string> = {}): ProjectIo {
+function ioOf(files: Record<string, string> = {}, directories: readonly string[] = []): ProjectIo {
+  const entries = new Map<string, { name: string, isDirectory: boolean }[]>()
+  for (const path of Object.keys(files)) {
+    const parent = path.slice(0, path.lastIndexOf('\\'))
+    const name = path.slice(path.lastIndexOf('\\') + 1)
+    entries.set(parent, [...entries.get(parent) ?? [], { name, isDirectory: false }])
+  }
+  for (const path of directories) {
+    const parent = path.slice(0, path.lastIndexOf('\\'))
+    const name = path.slice(path.lastIndexOf('\\') + 1)
+    entries.set(parent, [...entries.get(parent) ?? [], { name, isDirectory: true }])
+    if (!entries.has(path)) entries.set(path, [])
+  }
   return {
     isFile: path => Object.hasOwn(files, path),
     readText: path => files[path],
+    listDirectory: path => entries.get(path) ?? [],
   }
 }
 
@@ -118,4 +133,66 @@ test('tailOf keeps the recent part of a long log and marks the omission', () => 
   const text = 'a'.repeat(10) + 'TAIL'
   assert.match(tailOf(text, 4), /earlier characters omitted …\nTAIL$/)
   assert.equal(tailOf('short', 10), 'short')
+})
+
+test('collectConfigurationInputs finds scripts in subprojects and the version catalogue', () => {
+  const io = ioOf({
+    'C:\\p\\settings.gradle.kts': 'root',
+    'C:\\p\\build.gradle.kts': 'root',
+    'C:\\p\\gradle.properties': 'org.gradle.jvmargs=-Xmx1g',
+    'C:\\p\\gradle\\libs.versions.toml': '[versions]',
+    'C:\\p\\app\\build.gradle.kts': 'sub',
+    'C:\\p\\app\\src\\main\\java\\A.java': 'class A {}',
+  }, ['C:\\p\\app', 'C:\\p\\gradle', 'C:\\p\\app\\src', 'C:\\p\\app\\src\\main', 'C:\\p\\app\\src\\main\\java'])
+  assert.deepEqual(collectConfigurationInputs('C:\\p', io).map(input => input.path).sort(), [
+    'app/build.gradle.kts',
+    'build.gradle.kts',
+    'gradle.properties',
+    'gradle/libs.versions.toml',
+    'settings.gradle.kts',
+  ])
+})
+
+test('collectConfigurationInputs prunes build outputs and editor state', () => {
+  const io = ioOf({
+    'C:\\p\\build.gradle.kts': 'root',
+    'C:\\p\\build\\generated\\build.gradle': 'stale output',
+    'C:\\p\\.gradle\\caches\\build.gradle': 'cache',
+    'C:\\p\\node_modules\\x\\build.gradle': 'dependency',
+  }, ['C:\\p\\build', 'C:\\p\\build\\generated', 'C:\\p\\.gradle', 'C:\\p\\.gradle\\caches', 'C:\\p\\node_modules', 'C:\\p\\node_modules\\x'])
+  assert.deepEqual(collectConfigurationInputs('C:\\p', io).map(input => input.path), ['build.gradle.kts'])
+})
+
+test('fingerprintConfiguration changes when any input content changes', () => {
+  const before = fingerprintConfiguration(1, [{ path: 'build.gradle', digest: 'aaa' }], ['windows', ''])
+  const after = fingerprintConfiguration(1, [{ path: 'build.gradle', digest: 'bbb' }], ['windows', ''])
+  assert.notEqual(before, after)
+})
+
+test('fingerprintConfiguration changes when the platform or JDK changes', () => {
+  const inputs = [{ path: 'build.gradle', digest: 'aaa' }]
+  const windows = fingerprintConfiguration(1, inputs, ['windows', 'C:\\jdk17'])
+  assert.notEqual(windows, fingerprintConfiguration(1, inputs, ['posix', 'C:\\jdk17']))
+  assert.notEqual(windows, fingerprintConfiguration(1, inputs, ['windows', 'C:\\jdk21']))
+  assert.equal(windows, fingerprintConfiguration(1, inputs, ['windows', 'C:\\jdk17']))
+})
+
+test('fingerprintConfiguration ignores directory order and separates paths from digests', () => {
+  const ordered = fingerprintConfiguration(1, [
+    { path: 'a/build.gradle', digest: '11' },
+    { path: 'build.gradle', digest: '22' },
+  ], [])
+  const shuffled = fingerprintConfiguration(1, [
+    { path: 'build.gradle', digest: '22' },
+    { path: 'a/build.gradle', digest: '11' },
+  ], [])
+  assert.equal(ordered, shuffled)
+  const ambiguous = fingerprintConfiguration(1, [{ path: 'ab', digest: 'c' }], [])
+  const other = fingerprintConfiguration(1, [{ path: 'a', digest: 'bc' }], [])
+  assert.notEqual(ambiguous, other)
+})
+
+test('fingerprintConfiguration changes with the cache format version', () => {
+  const inputs = [{ path: 'build.gradle', digest: 'aaa' }]
+  assert.notEqual(fingerprintConfiguration(1, inputs, []), fingerprintConfiguration(2, inputs, []))
 })

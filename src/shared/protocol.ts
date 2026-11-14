@@ -105,10 +105,14 @@ export type TasksResponse = {
   readonly project: GradleProjectInfo
   /** Tasks bucketed by declared group, groups in display order. */
   readonly groups: readonly GradleTaskGroup[]
-  /** Wall-clock time the Gradle invocation took, in milliseconds. */
+  /** How long producing this list took; a cache hit reports the original scan. */
   readonly durationMs: number
-  /** Tail of the Gradle output, always populated so a failed scan is diagnosable. */
+  /** Tail of the Gradle output, empty for a cache hit. */
   readonly output: string
+  /** True when the list came from the project's cache instead of a Gradle run. */
+  readonly cached: boolean
+  /** When the list's scan finished, as epoch milliseconds. */
+  readonly scannedAt: number
 } | (FailureShape & {
   /** Project identified before the failure, when detection got that far. */
   readonly project?: GradleProjectInfo
