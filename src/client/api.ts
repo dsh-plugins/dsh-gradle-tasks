@@ -8,17 +8,10 @@
 import {
   ROUTE_BASE,
   type FailureCode,
-  type RunEvent,
   type RunResponse,
   type StateResponse,
   type TasksResponse,
 } from '../shared/protocol.ts'
-
-/** Where the panel is looking: a Session, an explicit directory, or both. */
-export interface Locator {
-  readonly sessionId?: string | undefined
-  readonly path?: string | undefined
-}
 
 /** A failure that happened before the Host could answer, reported like any other. */
 export class TransportFailure extends Error {
@@ -48,104 +41,56 @@ async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
 }
 
-/** Append the locator to a route URL. */
-function locate(route: string, locator: Locator, extra?: Record<string, string>): string {
-  const query = new URLSearchParams()
-  if (locator.sessionId !== undefined && locator.sessionId !== '') query.set('sessionId', locator.sessionId)
-  if (locator.path !== undefined && locator.path !== '') query.set('path', locator.path)
-  for (const [key, value] of Object.entries(extra ?? {})) query.set(key, value)
-  const suffix = query.toString()
-  return suffix === '' ? `${ROUTE_BASE}${route}` : `${ROUTE_BASE}${route}?${suffix}`
+/** What the panel asks about: one Session, and the options for this request. */
+export interface SessionQuery {
+  readonly sessionId: string
+  readonly javaHome?: string | null
+  /** Add `--offline` to the Gradle invocation. */
+  readonly offline?: boolean
+  /** Ignore the project's task cache and configure the build again. */
+  readonly force?: boolean
+}
+
+/** Build a route URL from the query's present fields. */
+function url(route: string, query: SessionQuery): string {
+  const params = new URLSearchParams({ sessionId: query.sessionId })
+  if (query.javaHome !== null && query.javaHome !== undefined) params.set('javaHome', query.javaHome)
+  if (query.offline === true) params.set('offline', '1')
+  if (query.force === true) params.set('force', '1')
+  return `${ROUTE_BASE}${route}?${params.toString()}`
 }
 
 /** Detect the project and enumerate JDKs. */
-export function fetchState(locator: Locator): Promise<StateResponse> {
-  return readJson<StateResponse>(locate('/state', locator))
+export function fetchState(sessionId: string): Promise<StateResponse> {
+  return readJson<StateResponse>(url('/state', { sessionId }))
+}
+
+/** Run Gradle's task report for the Session's project. */
+export function fetchTasks(query: SessionQuery): Promise<TasksResponse> {
+  return readJson<TasksResponse>(url('/tasks', query))
 }
 
 /**
- * Run Gradle's task report for the located project.
- * @param locator - Session or directory to inspect.
- * @param javaHome - JDK to configure the build with.
- * @param force - ignore the project's cache and configure the build again.
+ * Type one task into the Session's terminal.
+ * @param query - the Session, the JDK, and the offline choice.
+ * @param taskPath - fully qualified task to run.
+ * @param openTerminalIds - terminals the window currently shows, so a run can
+ *   continue in the one this plugin already opened instead of opening another.
  */
-export function fetchTasks(locator: Locator, javaHome: string | null, force: boolean): Promise<TasksResponse> {
-  const extra: Record<string, string> = {}
-  if (javaHome !== null) extra.javaHome = javaHome
-  if (force) extra.force = '1'
-  return readJson<TasksResponse>(locate('/tasks', locator, extra))
-}
-
-/** Start one task run. */
 export function startTaskRun(
-  locator: Locator,
+  query: SessionQuery,
   taskPath: string,
-  javaHome: string | null,
+  openTerminalIds: readonly string[],
 ): Promise<RunResponse> {
   return readJson<RunResponse>(`${ROUTE_BASE}/run`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
+      sessionId: query.sessionId,
       taskPath,
-      javaHome: javaHome ?? undefined,
-      sessionId: locator.sessionId,
-      path: locator.path,
+      javaHome: query.javaHome ?? undefined,
+      offline: query.offline === true,
+      openTerminalIds: [...openTerminalIds],
     }),
   })
-}
-
-/** Ask the Host to terminate a run. */
-export async function stopTaskRun(runId: string): Promise<boolean> {
-  const answer = await readJson<{ ok: boolean }>(`${ROUTE_BASE}/run/stop`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ runId }),
-  })
-  return answer.ok
-}
-
-/**
- * Stream one run's events until the Host closes the stream.
- * @param runId - run to follow.
- * @param onEvent - receives each decoded event.
- * @param onError - receives a transport failure after the stream began.
- * @returns an abort function that detaches without stopping the build.
- */
-export function streamTaskRun(
-  runId: string,
-  onEvent: (event: RunEvent) => void,
-  onError: (error: Error) => void,
-): () => void {
-  const abort = new AbortController()
-  void (async () => {
-    try {
-      const response = await fetch(`${ROUTE_BASE}/run/stream?id=${encodeURIComponent(runId)}`, {
-        signal: abort.signal,
-        headers: { accept: 'application/x-ndjson' },
-      })
-      if (!response.ok || response.body === null) {
-        throw new TransportFailure(`/run/stream → HTTP ${response.status}`)
-      }
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        let newline = buffer.indexOf('\n')
-        while (newline >= 0) {
-          const line = buffer.slice(0, newline)
-          buffer = buffer.slice(newline + 1)
-          if (line !== '') onEvent(JSON.parse(line) as RunEvent)
-          newline = buffer.indexOf('\n')
-        }
-      }
-      if (buffer.trim() !== '') onEvent(JSON.parse(buffer) as RunEvent)
-    } catch (error) {
-      if (abort.signal.aborted) return
-      onError(error instanceof Error ? error : new TransportFailure(String(error)))
-    }
-  })()
-  return () => { abort.abort() }
 }

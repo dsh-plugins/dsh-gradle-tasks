@@ -11,13 +11,13 @@ export declare const NAMESPACE = "gradleTasks";
 declare const zh: {
     'panel.title': string;
     'panel.description': string;
-    'toolbar.reloadTasks': string;
-    'toolbar.pickDirectory': string;
     'toolbar.java': string;
     'toolbar.javaMissing': string;
     'toolbar.javaHint': string;
-    'path.placeholder': string;
-    'status.noProject': string;
+    'toolbar.rescan': string;
+    'toolbar.offlineOn': string;
+    'toolbar.offlineOff': string;
+    'status.noSession': string;
     'status.scanning': string;
     'status.scanned': string;
     'status.wrapper': string;
@@ -27,13 +27,8 @@ declare const zh: {
     'tasks.empty': string;
     'tasks.ungrouped': string;
     'tasks.runHint': string;
-    'run.idle': string;
-    'run.running': string;
-    'run.succeeded': string;
-    'run.failed': string;
-    'run.stopped': string;
-    'run.stop': string;
-    'run.clear': string;
+    'run.starting': string;
+    'run.launched': string;
     'fail.no-session': string;
     'fail.session-inactive': string;
     'fail.directory-missing': string;
@@ -46,10 +41,10 @@ declare const zh: {
     'fail.no-report': string;
     'fail.java-invalid': string;
     'fail.task-missing': string;
+    'fail.terminal-failed': string;
     'fail.field-missing': string;
     'fail.body-invalid': string;
     'fail.body-too-large': string;
-    'fail.run-not-found': string;
     'fail.transport': string;
 };
 /** Every language this plugin ships, keyed the way the locale service expects. */

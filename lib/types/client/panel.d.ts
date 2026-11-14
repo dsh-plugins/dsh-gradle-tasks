@@ -1,21 +1,23 @@
 /**
- * The Gradle Tasks page: the project header with the JDK selector, the task
- * folders, and the build terminal, stacked for the right Sidebar's narrow
- * column.
+ * The Gradle Tasks page: the JDK selector and two icon controls, the task
+ * folders, and one line describing what the last run did.
  *
- * The panel owns no Gradle knowledge of its own — it asks the Host what the
- * project is and which tasks it declares, and streams one run at a time.
+ * The panel shows no build output of its own: a task runs in a real Session
+ * terminal, which the Sidebar shows as its own tab, so the person keeps the
+ * scrollback, the colours, and the ability to interrupt the build.
  */
 import * as React from 'react';
 import type { Translator } from './i18n.ts';
 /** Props the tab seat injects for one occurrence. */
 export interface GradleTasksPanelProps {
-    /** Session whose directory the page inspects by default. */
+    /** Session whose working directory the page inspects. */
     readonly sessionId: string;
     /** Copy bound to the Host language. */
     readonly translator: Translator;
-    /** Host directory picker, when the surrounding UI provides one. */
-    readonly pickDirectory?: (() => Promise<string | null>) | undefined;
+    /** Terminals the window currently shows as tabs. */
+    readonly openTerminalIds: () => readonly string[];
+    /** Bring a terminal's tab to the front, opening it when it is not shown. */
+    readonly revealTerminal: (terminalId: string) => void;
 }
 /**
  * The Gradle Tasks page component.

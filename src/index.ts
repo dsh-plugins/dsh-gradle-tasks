@@ -3,9 +3,9 @@
  *
  * The panel asks three questions and this half answers them over the plugin's
  * own HTTP routes: which Gradle project does this Session live in, which tasks
- * does it declare, and which JDKs does this machine have. Running a task is
- * the fourth: one spawned Gradle process whose output streams back to the
- * panel until the build ends.
+ * does it declare, and which JDKs does this machine have. Running a task is the
+ * fourth: this half types the command into the Session's terminal, so the build
+ * runs where the person can watch it and take over.
  */
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -14,22 +14,22 @@ import { delimiter, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import {
+  collectConfigurationInputs,
   describeProject,
   findProjectRoot,
+  fingerprintConfiguration,
   gradleArgv,
   groupTasks,
+  isTaskPath,
   parseTaskDump,
+  shellCommandLine,
   TASK_DUMP_SCRIPT,
   tailOf,
-  collectConfigurationInputs,
-  fingerprintConfiguration,
-  isTaskPath,
   wrapperScriptFor,
   type ProjectIo,
 } from './gradle.ts'
 import { collectJdkVariables, hasJavaExecutable, readReleaseEntry } from './jdk.ts'
 import { CACHE_VERSION, readTaskCache, writeTaskCache } from './cache.ts'
-import { RunRegistry, type SpawnedProcess } from './runs.ts'
 import {
   ROUTE_BASE,
   type FailureCode,
@@ -42,8 +42,17 @@ import {
 
 export const name = 'dsh-gradle-tasks'
 
-/** Host services this plugin reads: routes, peer vetting, processes, and Session directories. */
-export const inject = ['webServer', 'connection', 'subprocess', 'sessions', 'workingDirectory']
+/** Host services this plugin reads. */
+export const inject = [
+  'webServer',
+  'connection',
+  'subprocess',
+  'sessions',
+  'agents',
+  'workingDirectory',
+  'sandboxPolicy',
+  'terminalController',
+]
 
 /** Longest task listing before the Gradle configuration is considered stuck. */
 const LIST_TIMEOUT_MS = 15 * 60 * 1000
@@ -54,8 +63,37 @@ const MAX_BODY_BYTES = 16 * 1024
 /** Characters of Gradle output returned with a task listing. */
 const OUTPUT_TAIL_CHARS = 8000
 
-/** Grace period handed to the process seam when a build is terminated. */
+/** Grace period handed to the process seam when a scan is terminated. */
 const TERMINATE_GRACE_MS = 5000
+
+/** Terminal geometry for a Gradle terminal; the shell resizes it when shown. */
+const TERMINAL_COLS = 120
+const TERMINAL_ROWS = 32
+
+/** How long a new shell may stay silent before the command is typed regardless. */
+const SHELL_READY_TIMEOUT_MS = 8000
+
+/** The part of a subprocess handle the scan collector uses. */
+interface SpawnedProcess {
+  readonly stdout: NodeJS.ReadableStream | undefined
+  readonly stderr: NodeJS.ReadableStream | undefined
+  readonly done: Promise<{ readonly exitCode: number | null }>
+  terminate(): void
+}
+
+/** A Session-owned terminal as this plugin needs it. */
+interface AgentTerminalHandle {
+  readonly id: string
+  readonly info: { readonly state: string, readonly control: string, readonly title: string }
+  /** Output revision; advances as the shell produces something. */
+  readonly revision: number
+  /** Resolve once the next output change is applied, or reject when the wait aborts. */
+  changed(after: number, signal: AbortSignal): Promise<number>
+  /** Resolve once output received so far is applied. */
+  drain(): Promise<void>
+  write(data: string): Promise<void>
+  close(): Promise<void>
+}
 
 /** The extension points this Host half requires from the surrounding Host. */
 interface HostServices {
@@ -83,8 +121,29 @@ interface HostServices {
   readonly sessions: {
     get(id: string): object | undefined
   }
+  readonly agents: {
+    get(id: string): object | undefined
+  }
   readonly workingDirectory: {
     get(session: object): string
+  }
+  readonly sandboxPolicy: {
+    resolve(request: { session?: object, mode?: string }): unknown
+  }
+  readonly terminalController: {
+    openForAgent(
+      agent: object,
+      request: {
+        title: string
+        cwd?: string
+        cols: number
+        rows: number
+        policy: unknown
+        preferredShells: readonly string[]
+        env?: Readonly<Record<string, string>>
+      },
+      signal: AbortSignal,
+    ): Promise<AgentTerminalHandle>
   }
 }
 
@@ -143,18 +202,31 @@ const projectIo: ProjectIo = {
   },
 }
 
+/** Terminals this plugin opened, so the next run continues in the same one. */
+interface TerminalRecord {
+  readonly sessionId: string
+  readonly handle: AgentTerminalHandle
+}
+
 /**
- * Mount the routes and the run registry.
+ * Mount the routes.
  * @param ctx - Host Context with the declared services.
  */
 export function apply(ctx: Context): void {
   const host = ctx as unknown as HostContext
-  const runs = new RunRegistry(host.subprocess)
-  ctx.effect(() => () => { runs.dispose() }, 'gradle-tasks: runs')
-
   const platform = cachedPlatform(host)
   const scratch = ensureScratchDirectory()
   const scriptPath = writeDumpScript(scratch)
+  const terminals = new Map<string, TerminalRecord>()
+
+  ctx.effect(() => () => {
+    for (const record of terminals.values()) {
+      void record.handle.close().catch((error: unknown) => {
+        console.warn(`gradle-tasks: cannot close terminal ${record.handle.id}`, error)
+      })
+    }
+    terminals.clear()
+  }, 'gradle-tasks: terminals')
 
   ctx.effect(() => host.webServer.register({
     kind: 'exact',
@@ -163,15 +235,13 @@ export function apply(ctx: Context): void {
       if (rejected(host, req, res)) return
       if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
       try {
-        const query = queryOf(req)
-        const path = resolveDirectory(host, query.get('sessionId'), query.get('path'))
+        const path = sessionDirectory(host, queryOf(req).get('sessionId'))
         const root = findProjectRoot(path, projectIo)
         const state: StateResponse = {
           ok: true,
           path,
           project: root === null ? null : describeProject(root, projectIo),
           jdks: scanJdks(),
-          platform: await platform(),
         }
         sendJson(res, 200, state)
       } catch (error) {
@@ -188,8 +258,17 @@ export function apply(ctx: Context): void {
       if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
       try {
         const query = queryOf(req)
-        const path = resolveDirectory(host, query.get('sessionId'), query.get('path'))
-        sendJson(res, 200, await listTasks(host, path, await platform(), checkedJavaHome(query.get('javaHome')), scratch, scriptPath, query.get('force') === '1'))
+        const path = sessionDirectory(host, query.get('sessionId'))
+        sendJson(res, 200, await listTasks({
+          host,
+          path,
+          platform: await platform(),
+          javaHome: checkedJavaHome(query.get('javaHome')),
+          offline: query.get('offline') === '1',
+          force: query.get('force') === '1',
+          scratch,
+          scriptPath,
+        }))
       } catch (error) {
         sendJson(res, 200, failureOf(error) satisfies TasksResponse)
       }
@@ -204,72 +283,22 @@ export function apply(ctx: Context): void {
       if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
       try {
         const body = await readJsonBody(req)
-        const path = resolveDirectory(host, stringField(body, 'sessionId'), stringField(body, 'path'))
-        const taskPath = requiredString(body, 'taskPath')
-        if (!isTaskPath(taskPath)) throw new RouteFailure('task-missing', taskPath)
-        const javaHome = checkedJavaHome(stringField(body, 'javaHome'))
-        sendJson(res, 200, await startRun(host, runs, path, taskPath, javaHome, await platform()))
+        const answer = await runTask({
+          host,
+          terminals,
+          sessionId: requiredString(body, 'sessionId'),
+          taskPath: requiredString(body, 'taskPath'),
+          javaHome: checkedJavaHome(stringField(body, 'javaHome')),
+          offline: body.offline === true,
+          openTerminalIds: stringList(body, 'openTerminalIds'),
+          platform: await platform(),
+        })
+        sendJson(res, 200, answer)
       } catch (error) {
         sendJson(res, 200, failureOf(error) satisfies RunResponse)
       }
     },
   }), 'gradle-tasks: POST /run')
-
-  ctx.effect(() => host.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_BASE}/run/stream`,
-    handler: (req, res) => {
-      if (rejected(host, req, res)) return
-      if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
-      const id = queryOf(req).get('id') ?? ''
-      if (!runs.has(id)) {
-        sendJson(res, 404, { ok: false, error: 'run-not-found' } satisfies RunResponse)
-        return
-      }
-      res.writeHead(200, {
-        'content-type': 'application/x-ndjson; charset=utf-8',
-        'cache-control': 'no-store',
-        'x-accel-buffering': 'no',
-      })
-      let closed = false
-      const detach = runs.subscribe(id, (event) => {
-        if (closed) return
-        res.write(`${JSON.stringify(event)}\n`)
-        // The exit event is the transcript's last, so the response ends with
-        // it: a follower that never reads another byte cannot leak a socket.
-        if (event.type === 'exit') {
-          closed = true
-          res.end()
-        }
-      })
-      if (detach === undefined) {
-        // The run expired between the retention check and this subscribe.
-        sendJson(res, 404, { ok: false, error: 'run-not-found' } satisfies RunResponse)
-        return
-      }
-      // A finished run replays its transcript and is closed by the exit above.
-      if (closed) { detach(); return }
-      res.on('close', () => {
-        closed = true
-        detach()
-      })
-    },
-  }), 'gradle-tasks: GET /run/stream')
-
-  ctx.effect(() => host.webServer.register({
-    kind: 'exact',
-    path: `${ROUTE_BASE}/run/stop`,
-    handler: async (req, res) => {
-      if (rejected(host, req, res)) return
-      if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
-      try {
-        const body = await readJsonBody(req)
-        sendJson(res, 200, { ok: runs.stop(requiredString(body, 'runId')) })
-      } catch (error) {
-        sendJson(res, 200, failureOf(error))
-      }
-    },
-  }), 'gradle-tasks: POST /run/stop')
 }
 
 /**
@@ -339,23 +368,15 @@ function scanJdks(): JdkCandidate[] {
 }
 
 /**
- * Resolve the directory the panel should inspect.
+ * The Session's committed working directory.
  *
- * An explicit absolute path wins, so the panel can look at any build once a
- * person types or picks one. Otherwise the Session's committed working
- * directory is used, which is the project the conversation is already in.
+ * The panel inspects the project the conversation is already in, so the Session
+ * is the only input; a Caller cannot point it at another directory.
  * @param host - Host context with the Session store and directory owner.
- * @param sessionId - Session named by the request, when it named one.
- * @param path - explicit directory from the request.
+ * @param sessionId - Session named by the request.
  * @returns the absolute directory.
  */
-function resolveDirectory(host: HostContext, sessionId: string | null, path: string | null): string {
-  const explicit = path?.trim()
-  if (explicit !== undefined && explicit !== '') {
-    if (!isAbsolutePath(explicit)) throw new RouteFailure('directory-relative', explicit)
-    if (!isDirectory(explicit)) throw new RouteFailure('directory-missing', explicit)
-    return explicit
-  }
+function sessionDirectory(host: HostContext, sessionId: string | null): string {
   const id = sessionId?.trim()
   if (id === undefined || id === '') throw new RouteFailure('no-session')
   const session = host.sessions.get(id)
@@ -387,22 +408,37 @@ function isDirectory(path: string): boolean {
  * @param host - Host context carrying the subprocess provider.
  * @param project - the detected project.
  * @param platform - execution platform.
- * @returns the executable and its fixed leading arguments.
+ * @returns the executable path.
  */
 async function resolveScript(
   host: HostContext,
   project: GradleProjectInfo,
   platform: 'posix' | 'windows',
-): Promise<{ readonly path: string }> {
+): Promise<string> {
   const wrapper = wrapperScriptFor(project, platform)
-  if (wrapper !== null) return { path: join(project.rootDir, wrapper) }
+  if (wrapper !== null) return join(project.rootDir, wrapper)
   if (project.wrapper !== null) throw new RouteFailure('wrapper-mismatch', `${project.wrapper} / ${platform}`)
   try {
-    return { path: await host.subprocess.resolveExecutable('gradle') }
+    return await host.subprocess.resolveExecutable('gradle')
   } catch (error) {
     console.warn('gradle-tasks: no gradle executable on PATH', error)
     throw new RouteFailure('gradle-missing', project.rootDir)
   }
+}
+
+/** Everything one task listing needs, gathered so the function stays readable. */
+interface ListInput {
+  readonly host: HostContext
+  /** Directory the panel inspected. */
+  readonly path: string
+  readonly platform: 'posix' | 'windows'
+  readonly javaHome: string | null
+  /** Add `--offline`, so Gradle neither downloads nor checks for updates. */
+  readonly offline: boolean
+  /** Ignore any cache and configure the build again. */
+  readonly force: boolean
+  readonly scratch: string
+  readonly scriptPath: string
 }
 
 /**
@@ -411,31 +447,18 @@ async function resolveScript(
  * A cached list is returned when every configuration input still has the same
  * content and the platform and JDK are unchanged, because only then can the
  * previous scan be trusted to describe the same set of tasks.
- * @param host - Host context.
- * @param path - directory the panel inspected.
- * @param platform - execution platform.
- * @param javaHome - JDK to run this listing with, or null for the environment default.
- * @param scratch - directory for the temporary report.
- * @param scriptPath - the initialization script, written once at mount.
- * @param force - ignore any cache and configure the build again.
+ * @param input - the scan request.
  * @returns the grouped task report.
  */
-async function listTasks(
-  host: HostContext,
-  path: string,
-  platform: 'posix' | 'windows',
-  javaHome: string | null,
-  scratch: string,
-  scriptPath: string,
-  force: boolean,
-): Promise<TasksResponse> {
+async function listTasks(input: ListInput): Promise<TasksResponse> {
+  const { host, path, platform, javaHome, offline, force, scratch, scriptPath } = input
   const root = findProjectRoot(path, projectIo)
   if (root === null) throw new RouteFailure('not-gradle', path)
   const project = describeProject(root, projectIo)
   const fingerprint = fingerprintConfiguration(
     CACHE_VERSION,
     collectConfigurationInputs(project.rootDir, projectIo),
-    [platform, javaHome ?? '', scriptPath],
+    [platform, javaHome ?? '', scriptPath, offline ? 'offline' : 'online'],
   )
   if (!force) {
     const cached = readTaskCache(project.rootDir)
@@ -454,8 +477,9 @@ async function listTasks(
   const started = Date.now()
   const script = await resolveScript(host, project, platform)
   const reportPath = join(scratch, `tasks-${randomUUID()}.txt`)
-  const argv = gradleArgv(script, [
+  const argv = gradleArgv({ path: script }, [
     '--quiet', '--console=plain',
+    ...offline ? ['--offline'] : [],
     '-p', project.rootDir,
     '--init-script', scriptPath,
     `-PdshGradleTasksOut=${reportPath}`,
@@ -555,40 +579,153 @@ function collect(
   })
 }
 
-/**
- * Spawn and register one Gradle task run.
- * @param host - Host context.
- * @param runs - run registry.
- * @param path - directory the panel inspected.
- * @param taskPath - fully qualified task to execute.
- * @param javaHome - JDK chosen in the panel, or null for the environment default.
- * @param platform - execution platform.
- * @returns the accepted run.
- */
-async function startRun(
-  host: HostContext,
-  runs: RunRegistry,
-  path: string,
-  taskPath: string,
-  javaHome: string | null,
-  platform: 'posix' | 'windows',
-): Promise<RunResponse> {
-  const root = findProjectRoot(path, projectIo)
-  if (root === null) throw new RouteFailure('not-gradle', path)
-  const project = describeProject(root, projectIo)
-  const script = await resolveScript(host, project, platform)
-  const args = [taskPath, '--console=plain']
-  const runId = runs.start({
-    argv: gradleArgv(script, args, platform),
-    cwd: project.rootDir,
-    env: javaEnvironment(javaHome),
-    graceMs: TERMINATE_GRACE_MS,
-  })
-  return { ok: true, runId, command: [script.path, ...args].join(' ') }
+/** Everything one run needs. */
+interface RunInput {
+  readonly host: HostContext
+  readonly terminals: Map<string, TerminalRecord>
+  readonly sessionId: string
+  readonly taskPath: string
+  readonly javaHome: string | null
+  readonly offline: boolean
+  /** Terminals currently open as tabs in the asking window. */
+  readonly openTerminalIds: readonly string[]
+  readonly platform: 'posix' | 'windows'
 }
 
 /**
- * The environment a Gradle process needs to build with a chosen JDK.
+ * Type one Gradle task into the Session's terminal.
+ *
+ * The terminal is reused while this plugin still holds its handle, the person
+ * has not taken it over, and a tab for it is open; otherwise a new one is
+ * opened, which the Sidebar then shows as its own tab.
+ * @param input - the run request.
+ * @returns the terminal the command went to.
+ */
+async function runTask(input: RunInput): Promise<RunResponse> {
+  const { host, terminals, sessionId, taskPath, javaHome, offline, openTerminalIds, platform } = input
+  if (!isTaskPath(taskPath)) throw new RouteFailure('task-missing', taskPath)
+  const directory = sessionDirectory(host, sessionId)
+  const root = findProjectRoot(directory, projectIo)
+  if (root === null) throw new RouteFailure('not-gradle', directory)
+  const project = describeProject(root, projectIo)
+  const script = await resolveScript(host, project, platform)
+  const args = [taskPath, '--console=plain', ...offline ? ['--offline'] : []]
+  const command = shellCommandLine(script, args, platform)
+
+  const agent = host.agents.get(sessionId)
+  if (agent === undefined) throw new RouteFailure('session-inactive', sessionId)
+  const session = host.sessions.get(sessionId)
+  if (session === undefined) throw new RouteFailure('session-inactive', sessionId)
+
+  const reusable = reusableTerminal(terminals.get(sessionId), openTerminalIds)
+  const terminal = reusable ?? await openTerminal(host, {
+    agent,
+    session,
+    sessionId,
+    cwd: project.rootDir,
+    env: javaEnvironment(javaHome),
+  })
+  terminals.set(sessionId, { sessionId, handle: terminal })
+
+  await awaitShell(terminal)
+  await terminal.write(`${command}\r`)
+  return {
+    ok: true,
+    terminalId: terminal.id,
+    terminalTitle: terminal.info.title,
+    command,
+    taskPath,
+  }
+}
+
+/**
+ * Wait until the terminal's shell has produced output.
+ *
+ * A shell that is still starting — loading a PowerShell profile, sourcing an
+ * rc file — may drop input typed before its prompt, so the command goes in once
+ * the terminal has spoken. A shell that stays silent until the timeout receives
+ * the command anyway; the warning records that the wait did not confirm it.
+ * @param terminal - the terminal about to receive the command.
+ */
+async function awaitShell(terminal: AgentTerminalHandle): Promise<void> {
+  const deadline = Date.now() + SHELL_READY_TIMEOUT_MS
+  while (terminal.revision === 0) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      console.warn(`gradle-tasks: terminal ${terminal.id} produced no output within ${SHELL_READY_TIMEOUT_MS}ms`)
+      return
+    }
+    try {
+      await terminal.changed(terminal.revision, AbortSignal.timeout(remaining))
+    } catch (error) {
+      console.warn(`gradle-tasks: terminal ${terminal.id} stayed silent; typing the command anyway`, error)
+      return
+    }
+  }
+  await terminal.drain()
+}
+
+/**
+ * The terminal a run may continue in.
+ * @param record - the terminal this plugin last opened for the Session.
+ * @param openTerminalIds - terminals the asking window currently shows as tabs.
+ * @returns that terminal, or undefined when a new one is needed.
+ */
+function reusableTerminal(
+  record: TerminalRecord | undefined,
+  openTerminalIds: readonly string[],
+): AgentTerminalHandle | undefined {
+  if (record === undefined) return undefined
+  const { handle } = record
+  if (handle.info.state !== 'running') return undefined
+  // A terminal the person typed into belongs to them; typing into it would
+  // hijack their session, so the next run gets a terminal of its own.
+  if (handle.info.control !== 'agent') return undefined
+  if (!openTerminalIds.includes(handle.id)) return undefined
+  return handle
+}
+
+/**
+ * Open a new Session terminal for builds.
+ * @param host - Host context with the terminal controller and sandbox policy.
+ * @param request - the owning Agent and Session, the build directory, and the environment.
+ * @returns the committed terminal.
+ */
+async function openTerminal(
+  host: HostContext,
+  request: {
+    readonly agent: object
+    readonly session: object
+    readonly sessionId: string
+    readonly cwd: string
+    readonly env: Readonly<Record<string, string>>
+  },
+): Promise<AgentTerminalHandle> {
+  const title = terminalTitleOf(request.cwd)
+  try {
+    return await host.terminalController.openForAgent(request.agent, {
+      title,
+      cwd: request.cwd,
+      cols: TERMINAL_COLS,
+      rows: TERMINAL_ROWS,
+      policy: host.sandboxPolicy.resolve({ session: request.session }),
+      preferredShells: [],
+      env: request.env,
+    }, AbortSignal.timeout(30_000))
+  } catch (error) {
+    console.error(`gradle-tasks: cannot open a terminal for ${request.sessionId}`, error)
+    throw new RouteFailure('terminal-failed', error instanceof Error ? error.message : String(error))
+  }
+}
+
+/** The tab title for a build terminal: the project directory's name. */
+function terminalTitleOf(rootDir: string): string {
+  const name = rootDir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? rootDir
+  return `Gradle · ${name}`.slice(0, 120)
+}
+
+/**
+ * The environment a Gradle shell needs to build with a chosen JDK.
  *
  * `JAVA_HOME` is what Gradle reads, and `PATH` is what the wrapper's own
  * `java` lookup reads first, so both are set together; a null home leaves the
@@ -685,6 +822,13 @@ function requiredString(body: Record<string, unknown>, key: string): string {
   const value = stringField(body, key)?.trim()
   if (value === undefined || value === '') throw new RouteFailure('field-missing', key)
   return value
+}
+
+/** Read a list of strings, ignoring anything else the body carries. */
+function stringList(body: Record<string, unknown>, key: string): readonly string[] {
+  const value = body[key]
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string')
 }
 
 /**

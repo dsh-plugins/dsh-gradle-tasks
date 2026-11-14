@@ -11,7 +11,9 @@ import {
   parseTaskDump,
   powerShellArgv,
   projectPathOf,
+  quotePosix,
   quotePowerShell,
+  shellCommandLine,
   tailOf,
   type ProjectIo,
 } from '../src/gradle.ts'
@@ -127,6 +129,21 @@ test('gradleArgv also routes a PATH gradle.bat through PowerShell on Windows', (
 test('gradleArgv starts a native executable directly on Windows', () => {
   assert.deepEqual(gradleArgv({ path: 'C:\\gradle\\bin\\gradle.exe' }, ['build'], 'windows'),
     ['C:\\gradle\\bin\\gradle.exe', 'build'])
+})
+
+test('shellCommandLine quotes every argument for the shell that runs it', () => {
+  assert.equal(
+    shellCommandLine('C:\\a b\\gradlew.bat', [':build', '--offline'], 'windows'),
+    "& 'C:\\a b\\gradlew.bat' ':build' '--offline'",
+  )
+  assert.equal(
+    shellCommandLine('/p/gradlew', [':build', '--offline'], 'posix'),
+    "'/p/gradlew' ':build' '--offline'",
+  )
+})
+
+test('quotePosix escapes an embedded quote so the argument stays one word', () => {
+  assert.equal(quotePosix("it's"), "'it'\\''s'")
 })
 
 test('tailOf keeps the recent part of a long log and marks the omission', () => {

@@ -15,8 +15,14 @@ import { STYLES } from './styles.ts'
 
 export const name = 'dsh-gradle-tasks'
 
-/** Browser services this plugin needs: the slot registry and the tab-type registry. */
-export const inject = ['slots', 'sidebarRightTabs']
+/**
+ * Browser services this plugin needs.
+ *
+ * `webTerminals` and `sidebarRight` are what turn a run into a visible terminal
+ * tab; they are declared here rather than read optionally because without them
+ * a task could run where nobody can see it.
+ */
+export const inject = ['slots', 'sidebarRightTabs', 'sidebarRight', 'webTerminals']
 
 /** Identity of this tab type in the Sidebar's registry, and the key its body registers under. */
 const TAB_ID = 'dsh-gradle-tasks'
@@ -27,21 +33,64 @@ const TAB_KIND = 'gradle-tasks'
 /** The guide card that opens this page. */
 const GUIDE_ENTRY_ID = 'gradle-tasks'
 
-/** The workspace service face used to offer the Host's directory picker. */
-interface UiWorkspaceFace {
-  pickDirectory(): Promise<string | null>
+/** The Sidebar face used to reveal a terminal tab. */
+interface SidebarFace {
+  tabsIn(sessionId: string): readonly { readonly id: string, readonly contentId: string, readonly kind: string }[]
+  openTabIn(sessionId: string, kind: string, options: { readonly params?: unknown }): void
+  focus(tabId: string): void
+}
+
+/** The terminal model face used to map a tab to the terminal it shows. */
+interface TerminalsFace {
+  boundTerminal(sessionId: string, contentId: string): string | undefined
 }
 
 /**
  * Mount the page: its tab type, its body, and its copy.
- * @param ctx - browser Context with the slot and tab-type registries.
+ * @param ctx - browser Context with the slot, tab-type, and terminal faces.
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => installStyles(), 'gradle-tasks: styles')
   registerDictionaries(ctx)
 
   const translator = createTranslator(ctx)
-  const workspace = ctx.get('uiWorkspace') as UiWorkspaceFace | undefined
+  const sidebar = ctx.sidebarRight
+  const terminals = ctx.webTerminals
+
+  /** Terminal identities this Session currently shows as tabs. */
+  const openTerminalIds = (sessionId: string): readonly string[] =>
+    sidebar.tabsIn(sessionId).flatMap((tab) => {
+      if (tab.kind !== 'terminal') return []
+      const id = terminals.boundTerminal(sessionId, tab.contentId)
+      return id === undefined ? [] : [id]
+    })
+
+  /**
+   * Bring a terminal's tab to the front, opening it when it is not there yet.
+   *
+   * The terminal panel also opens a tab by itself for a terminal an Agent
+   * creates, so the tab this opens is bound to the terminal straight away: an
+   * unbound tab is invisible to that check, and the panel would open a second
+   * tab for the same terminal.
+   * @param sessionId - Session the run belongs to.
+   * @param terminalId - the terminal the command went to.
+   */
+  const revealTerminal = (sessionId: string, terminalId: string): void => {
+    const shown = sidebar.tabsIn(sessionId).find(tab =>
+      tab.kind === 'terminal' && terminals.boundTerminal(sessionId, tab.contentId) === terminalId)
+    if (shown !== undefined) {
+      sidebar.focus(shown.id)
+      return
+    }
+    const before = new Set(sidebar.tabsIn(sessionId).map(tab => tab.id))
+    sidebar.openTabIn(sessionId, 'terminal', { params: { terminalId } })
+    const opened = sidebar.tabsIn(sessionId).find(tab => tab.kind === 'terminal' && !before.has(tab.id))
+    if (opened === undefined) {
+      console.warn(`gradle-tasks: the terminal tab for ${terminalId} did not open`)
+      return
+    }
+    terminals.bind(sessionId, opened.contentId, terminalId)
+  }
 
   ctx.effect(() => ctx.sidebarRightTabs.register({
     id: TAB_ID,
@@ -63,7 +112,8 @@ export function apply(ctx: ClientContext): void {
     inject: (sessionId: string): GradleTasksPanelProps => ({
       sessionId,
       translator,
-      ...workspace === undefined ? {} : { pickDirectory: () => workspace.pickDirectory() },
+      openTerminalIds: () => openTerminalIds(sessionId),
+      revealTerminal: (terminalId) => { revealTerminal(sessionId, terminalId) },
     }),
   }, GradleTasksPanel)), 'gradle-tasks: tab body')
 }

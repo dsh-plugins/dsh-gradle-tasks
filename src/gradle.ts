@@ -391,6 +391,36 @@ export function fingerprintConfiguration(
 }
 
 /**
+ * Quote one argument for a POSIX shell.
+ * @param value - the argument.
+ * @returns the single-quoted argument, with embedded quotes escaped.
+ */
+export function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+/**
+ * The command line typed into a terminal to run one Gradle invocation.
+ *
+ * The person's shell decides how the text is parsed, so every argument is a
+ * quoted literal: a wrapper path containing spaces, a task path containing
+ * dots, and Windows paths in general all survive intact.
+ * @param script - wrapper path, or the `gradle` executable.
+ * @param args - the Gradle arguments.
+ * @param platform - platform the terminal's shell runs on.
+ * @returns the command line, without a trailing newline.
+ */
+export function shellCommandLine(
+  script: string,
+  args: readonly string[],
+  platform: 'posix' | 'windows',
+): string {
+  const quote = platform === 'windows' ? quotePowerShell : quotePosix
+  const head = platform === 'windows' ? '& ' : ''
+  return [head + quote(script), ...args.map(quote)].join(' ')
+}
+
+/**
  * Keep the trailing part of a log, so a failure message stays readable.
  * @param text - full log.
  * @param limit - maximum number of characters to keep.

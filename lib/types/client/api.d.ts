@@ -5,36 +5,31 @@
  * generated Remote code; the browser's cookie travels with each same-origin
  * request, which is the same admission the shipped routes rely on.
  */
-import { type FailureCode, type RunEvent, type RunResponse, type StateResponse, type TasksResponse } from '../shared/protocol.ts';
-/** Where the panel is looking: a Session, an explicit directory, or both. */
-export interface Locator {
-    readonly sessionId?: string | undefined;
-    readonly path?: string | undefined;
-}
+import { type FailureCode, type RunResponse, type StateResponse, type TasksResponse } from '../shared/protocol.ts';
 /** A failure that happened before the Host could answer, reported like any other. */
 export declare class TransportFailure extends Error {
     readonly detail: string;
     readonly code: FailureCode;
     constructor(detail: string);
 }
+/** What the panel asks about: one Session, and the options for this request. */
+export interface SessionQuery {
+    readonly sessionId: string;
+    readonly javaHome?: string | null;
+    /** Add `--offline` to the Gradle invocation. */
+    readonly offline?: boolean;
+    /** Ignore the project's task cache and configure the build again. */
+    readonly force?: boolean;
+}
 /** Detect the project and enumerate JDKs. */
-export declare function fetchState(locator: Locator): Promise<StateResponse>;
+export declare function fetchState(sessionId: string): Promise<StateResponse>;
+/** Run Gradle's task report for the Session's project. */
+export declare function fetchTasks(query: SessionQuery): Promise<TasksResponse>;
 /**
- * Run Gradle's task report for the located project.
- * @param locator - Session or directory to inspect.
- * @param javaHome - JDK to configure the build with.
- * @param force - ignore the project's cache and configure the build again.
+ * Type one task into the Session's terminal.
+ * @param query - the Session, the JDK, and the offline choice.
+ * @param taskPath - fully qualified task to run.
+ * @param openTerminalIds - terminals the window currently shows, so a run can
+ *   continue in the one this plugin already opened instead of opening another.
  */
-export declare function fetchTasks(locator: Locator, javaHome: string | null, force: boolean): Promise<TasksResponse>;
-/** Start one task run. */
-export declare function startTaskRun(locator: Locator, taskPath: string, javaHome: string | null): Promise<RunResponse>;
-/** Ask the Host to terminate a run. */
-export declare function stopTaskRun(runId: string): Promise<boolean>;
-/**
- * Stream one run's events until the Host closes the stream.
- * @param runId - run to follow.
- * @param onEvent - receives each decoded event.
- * @param onError - receives a transport failure after the stream began.
- * @returns an abort function that detaches without stopping the build.
- */
-export declare function streamTaskRun(runId: string, onEvent: (event: RunEvent) => void, onError: (error: Error) => void): () => void;
+export declare function startTaskRun(query: SessionQuery, taskPath: string, openTerminalIds: readonly string[]): Promise<RunResponse>;

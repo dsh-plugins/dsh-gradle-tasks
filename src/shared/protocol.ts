@@ -71,10 +71,10 @@ export type FailureCode =
   | 'no-report'
   | 'java-invalid'
   | 'task-missing'
+  | 'terminal-failed'
   | 'field-missing'
   | 'body-invalid'
   | 'body-too-large'
-  | 'run-not-found'
   | 'transport'
 
 /** Fields every failing answer carries. */
@@ -89,14 +89,12 @@ export interface FailureShape {
 /** Answer to the panel's first request: what the directory is and which JDKs exist. */
 export type StateResponse = {
   readonly ok: true
-  /** Absolute directory the panel inspects. */
+  /** Absolute directory the panel inspects — the Session's working directory. */
   readonly path: string
   /** Detected project, or null when the directory is not inside a Gradle build. */
   readonly project: GradleProjectInfo | null
   /** Every JDK found in the Host environment, best first. */
   readonly jdks: readonly JdkCandidate[]
-  /** Host execution platform, so the panel can name the wrapper it will run. */
-  readonly platform: 'posix' | 'windows'
 } | FailureShape
 
 /** Answer to a task-listing request. */
@@ -121,16 +119,15 @@ export type TasksResponse = {
   readonly durationMs?: number
 })
 
-/** Answer to a run request. */
+/** Answer to a run request: the terminal the command was typed into. */
 export type RunResponse = {
   readonly ok: true
-  readonly runId: string
-  /** Command line the Host executed, shown above the terminal. */
+  /** Host terminal identity, so the panel can bring its tab forward. */
+  readonly terminalId: string
+  /** Human-readable title of that terminal. */
+  readonly terminalTitle: string
+  /** The exact command line typed into it. */
   readonly command: string
+  /** Task path that was launched. */
+  readonly taskPath: string
 } | FailureShape
-
-/** One line of the newline-delimited JSON stream a run publishes. */
-export type RunEvent =
-  | { readonly type: 'chunk'; readonly stream: 'stdout' | 'stderr'; readonly text: string }
-  | { readonly type: 'exit'; readonly code: number | null; readonly durationMs: number }
-  | { readonly type: 'error'; readonly message: string }

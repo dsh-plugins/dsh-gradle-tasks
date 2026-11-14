@@ -54,6 +54,29 @@ export interface LocaleRegistry {
   subscribe?(listener: () => void): Disposer
 }
 
+/** One open tab record, as the Sidebar reports it. */
+export interface TabRecord {
+  readonly id: string
+  readonly kind: string
+  /** Globally unique content identity of the tab. */
+  readonly contentId: string
+}
+
+/** The right Sidebar's navigation face. */
+export interface SidebarRightFace {
+  tabsIn(sessionId: string): readonly TabRecord[]
+  openTabIn(sessionId: string, kind: string, options: { readonly params?: unknown }): void
+  focus(tabId: string): void
+}
+
+/** The browser terminal models, keyed independently of Host terminal identities. */
+export interface WebTerminalsFace {
+  /** The Host terminal a tab's content is bound to in this window. */
+  boundTerminal(sessionId: string, contentId: string): string | undefined
+  /** Record that a tab's content shows an existing terminal, before its body mounts. */
+  bind(sessionId: string, contentId: string, id: string): void
+}
+
 /** Browser context members this plugin requires. */
 export interface ClientContext {
   effect(callback: () => Disposer | void, label?: string): Disposer
@@ -61,4 +84,6 @@ export interface ClientContext {
   get(name: string): unknown
   readonly slots: SlotRegistry
   readonly sidebarRightTabs: TabTypeRegistry
+  readonly sidebarRight: SidebarRightFace
+  readonly webTerminals: WebTerminalsFace
 }
