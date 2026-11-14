@@ -1,5 +1,5 @@
 {
-  "name": "dsh-gradle-tasks",
+  "name": "@dsh-plugin/dsh-gradle-tasks",
   "version": "0.1.0",
   "type": "module",
   "description": "Gradle task browser for the DSH right Sidebar: detects the Session's Gradle project, lists every task grouped by its declared group, runs a task from its project wrapper with a chosen JDK, and streams the build output back into the panel.",

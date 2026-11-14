@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="icon.svg" alt="dsh-gradle-tasks" width="72" height="72" />
+<img src="icon.svg" alt="@dsh-plugin/dsh-gradle-tasks" width="72" height="72" />
 
 # dsh-gradle-tasks
 
