@@ -59,7 +59,7 @@ npm run build
 npm test
 ```
 
-`src/` 为 TypeScript 源码，运行期加载 `lib/` 中的产物。客户端入口 `src/client/index.tsx` 由 `tsdown` 编译为 CommonJS 并包进 `window.__ModuleLoader__.load({ id: "dsh-gradle-tasks", ... })` 闭包；构建配置见 [tsdown.client.config.mjs](tsdown.client.config.mjs)。修改客户端源码后需重新构建并刷新页面，修改宿主端源码后需重启 DSH 进程（Node 的 ESM 缓存按 URL 驻留）。
+`src/` 为 TypeScript 源码，运行期加载 `lib/` 中的产物。客户端入口 `src/client/index.tsx` 由 `tsdown` 编译为 CommonJS 并包进 `window.__ModuleLoader__.load({ id: "@dsh-plugin/dsh-gradle-tasks", ... })` 闭包；构建配置见 [tsdown.client.config.mjs](tsdown.client.config.mjs)。修改客户端源码后需重新构建并刷新页面，修改宿主端源码后需重启 DSH 进程（Node 的 ESM 缓存按 URL 驻留）。
 
 `npm test` 覆盖且仅覆盖本仓库的算法与解析逻辑：Gradle 工程定位、任务清单解析、分组排序、命令行拼装、JDK 变量筛选与排序。业务编排、路由处理与界面渲染不写测试。
 
@@ -89,7 +89,7 @@ dsh plugin --profile web add <克隆下来的目录绝对路径>
 ```yaml
 - insert:
     - id: gradle-tasks
-      name: 'dsh-gradle-tasks'
+      name: '@dsh-plugin/dsh-gradle-tasks'
 ```
 
 安装并重启后，展开右侧边栏的「开始」页，会看到「Gradle 任务」卡片；点开即在该侧栏内打开页面，之后它作为标签留在侧栏顶部。

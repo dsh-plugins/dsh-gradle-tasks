@@ -4,4 +4,4 @@
 - insert:
     # Stable id so later layers can patch or disable this row by id.
     - id: gradle-tasks
-      name: 'dsh-gradle-tasks'
+      name: '@dsh-plugin/dsh-gradle-tasks'
