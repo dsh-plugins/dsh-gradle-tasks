@@ -2,6 +2,8 @@
 
 在 DSH Web 界面的左侧主导航中增加一个「Gradle 任务」面板：识别当前会话所在项目是否为 Gradle 工程，按任务声明的 `group` 分文件夹列出全部任务，双击任务即用项目自带的 wrapper 与选定的 JDK 运行，构建输出实时回传到面板内置终端。
 
+![面板预览](docs/preview.svg)
+
 ## 功能
 
 | 功能 | 说明 |
@@ -87,6 +89,7 @@ dsh-gradle-tasks/
 ├── cordis.patch.yml          # 插入宿主入口的补丁层
 ├── icon.svg                  # 插件展示图标
 ├── locale/{zh,en}.json       # 插件管理页的标题与简介
+├── docs/preview.svg          # 面板预览图
 ├── src/
 │   ├── index.ts              # 宿主端：路由、运行注册表装配、JDK 扫描
 │   ├── gradle.ts             # 工程定位、任务解析、分组排序、命令行拼装

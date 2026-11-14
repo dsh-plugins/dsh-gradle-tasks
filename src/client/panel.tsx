@@ -44,7 +44,7 @@ export interface GradleTasksPanelServices {
 interface RunView {
   readonly taskPath: string
   readonly command: string
-  readonly phase: 'running' | 'succeeded' | 'failed'
+  readonly phase: 'running' | 'succeeded' | 'failed' | 'stopped'
   readonly code: number | null
   readonly durationMs: number
 }
@@ -139,6 +139,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
   const flushTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const detach = React.useRef<(() => void) | undefined>(undefined)
   const runId = React.useRef<string | null>(null)
+  const stopping = React.useRef(false)
   const terminal = React.useRef<HTMLPreElement | null>(null)
 
   /** Commit buffered build output to state, keeping the tail only. */
@@ -269,6 +270,8 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
   const runTask = React.useCallback(async (task: GradleTask): Promise<void> => {
     if (run?.phase === 'running') return
     stopStreaming()
+    stopping.current = false
+    runId.current = null
     setOutput('')
     setRun({ taskPath: task.path, command: '', phase: 'running', code: null, durationMs: 0 })
     try {
@@ -294,7 +297,13 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
         runId.current = null
         setRun(current => current === null
           ? current
-          : { ...current, phase: event.code === 0 ? 'succeeded' : 'failed', code: event.code, durationMs: event.durationMs })
+          : {
+              ...current,
+              phase: stopping.current ? 'stopped' : event.code === 0 ? 'succeeded' : 'failed',
+              code: event.code,
+              durationMs: event.durationMs,
+            })
+        stopping.current = false
       }
       const onError = (error: Error): void => { appendOutput(`\n${error.message}\n`) }
       detach.current = streamTaskRun(started.runId, onEvent, onError)
@@ -305,13 +314,15 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     }
   }, [run, stopStreaming, currentSessionId, override, javaHome, t, appendOutput, flushOutput])
 
-  /** Terminate the running build; its exit event then settles the badge. */
+  /** Terminate the running build; its exit event then settles the badge as stopped. */
   const stopRun = React.useCallback(async (): Promise<void> => {
     const id = runId.current
     if (id === null) return
+    stopping.current = true
     try {
       await stopTaskRun(id)
     } catch (error) {
+      stopping.current = false
       appendOutput(`\n${error instanceof Error ? error.message : String(error)}\n`)
     }
   }, [appendOutput])
@@ -340,6 +351,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     if (run.phase === 'succeeded') {
       return { className: 'gt-badge gt-ok', text: `${t('run.succeeded')} · ${formatDuration(run.durationMs)}` }
     }
+    if (run.phase === 'stopped') return { className: 'gt-badge', text: t('run.stopped') }
     return { className: 'gt-badge gt-bad', text: t('run.failed', { code: run.code ?? '—' }) }
   })()
 
@@ -412,7 +424,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
           </div>
           <div className="gt-scroll">
             {groups.length === 0 ? (
-              <div className="gt-empty">{tasks?.ok === true ? t('tasks.empty') : t('tasks.runHint')}</div>
+              <div className="gt-empty">{tasks?.ok === true ? t('tasks.empty') : t('panel.description')}</div>
             ) : groups.map((group) => {
               const name = group.group === '' ? t('tasks.ungrouped') : group.group
               const open = !collapsed.includes(group.group)

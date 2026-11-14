@@ -10,16 +10,12 @@ export declare const NAMESPACE = "gradleTasks";
 declare const zh: {
     'panel.title': string;
     'panel.description': string;
-    'panel.open': string;
-    'toolbar.refresh': string;
     'toolbar.reloadTasks': string;
     'toolbar.pickDirectory': string;
     'toolbar.java': string;
-    'toolbar.javaDefault': string;
     'toolbar.javaMissing': string;
     'toolbar.javaHint': string;
     'path.placeholder': string;
-    'path.useSession': string;
     'status.notGradle': string;
     'status.noProject': string;
     'status.scanning': string;
@@ -38,9 +34,6 @@ declare const zh: {
     'run.stopped': string;
     'run.stop': string;
     'run.clear': string;
-    'run.elapsed': string;
-    'run.task': string;
-    'error.noSession': string;
 };
 /** Every language this plugin ships, keyed the way the locale service expects. */
 export declare const DICTIONARIES: Record<string, Record<string, string>>;
