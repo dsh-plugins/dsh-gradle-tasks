@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Gradle Tasks",
+    "description": "Browse every task of the current Gradle project in a sidebar, grouped into folders by the group each task declares; double-click one to run it with the project wrapper and a chosen JDK, with the build output streamed back into the panel terminal."
+  }
+}

@@ -1,0 +1,7 @@
+# The dsh-gradle-tasks bundle patch: inserts this plugin into the profile entry
+# list. Declared by `dsh.bundle.patch` in package.json, so the profile boot
+# applies this layer automatically without editing cordis.patch.yml by hand.
+- insert:
+    # Stable id so later layers can patch or disable this row by id.
+    - id: gradle-tasks
+      name: 'dsh-gradle-tasks'
