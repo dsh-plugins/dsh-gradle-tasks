@@ -25,7 +25,7 @@
 
 ## 构建
 
-开发需要 Node.js `>=24.9.0`（与 DSH 运行时一致）。
+开发需要 Node.js `>=22.6.0`（`npm test` 依赖原生 TypeScript 类型剥离；DSH 自身另有更高的运行时要求）。
 
 ```powershell
 npm install --no-audit --no-fund
