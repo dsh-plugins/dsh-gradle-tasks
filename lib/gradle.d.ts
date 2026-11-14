@@ -13,7 +13,7 @@ export interface ProjectIo {
     /** Whether `path` names an existing regular file. */
     isFile(path: string): boolean;
     /** Read a UTF-8 text file, or undefined when it cannot be read. */
-    readText?(path: string): string | undefined;
+    readText(path: string): string | undefined;
 }
 /** Failures worth reporting with the exact path that caused them. */
 export declare class GradlePathError extends Error {

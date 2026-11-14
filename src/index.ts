@@ -174,7 +174,7 @@ export function apply(ctx: Context): void {
       try {
         const query = queryOf(req)
         const path = resolveDirectory(host, query.get('sessionId'), query.get('path'))
-        sendJson(res, 200, await listTasks(host, path, await platform(), query.get('javaHome'), scratch, scriptPath))
+        sendJson(res, 200, await listTasks(host, path, await platform(), checkedJavaHome(query.get('javaHome')), scratch, scriptPath))
       } catch (error) {
         sendJson(res, 200, failureOf(error) satisfies TasksResponse)
       }
@@ -192,7 +192,7 @@ export function apply(ctx: Context): void {
         const path = resolveDirectory(host, stringField(body, 'sessionId'), stringField(body, 'path'))
         const taskPath = requiredString(body, 'taskPath')
         if (!isTaskPath(taskPath)) throw new RouteFailure('task-missing', taskPath)
-        const javaHome = optionalJavaHome(body)
+        const javaHome = checkedJavaHome(stringField(body, 'javaHome'))
         sendJson(res, 200, await startRun(host, runs, path, taskPath, javaHome, await platform()))
       } catch (error) {
         sendJson(res, 200, failureOf(error) satisfies RunResponse)
@@ -313,7 +313,7 @@ function scanJdks(): JdkCandidate[] {
   const verified = collectJdkVariables(process.env)
     .filter(candidate => hasJavaExecutable(candidate.home, projectIo.isFile))
     .map((candidate) => {
-      const release = projectIo.readText?.(join(candidate.home, 'release'))
+      const release = projectIo.readText(join(candidate.home, 'release'))
       return {
         variable: candidate.variable,
         home: candidate.home,
@@ -638,11 +638,13 @@ function requiredString(body: Record<string, unknown>, key: string): string {
 /**
  * Read the JDK choice, rejecting a directory that does not exist so a typo
  * cannot silently fall back to the inherited JDK.
+ * @param value - a directory from the request body or query, or null.
+ * @returns the validated directory, or null to inherit the environment.
  */
-function optionalJavaHome(body: Record<string, unknown>): string | null {
-  const value = stringField(body, 'javaHome')?.trim()
-  if (value === undefined || value === '') return null
-  if (!isAbsolutePath(value)) throw new RouteFailure('java-invalid', value)
-  if (!hasJavaExecutable(value, projectIo.isFile)) throw new RouteFailure('java-invalid', value)
-  return value
+function checkedJavaHome(value: string | null | undefined): string | null {
+  const home = value?.trim()
+  if (home === undefined || home === '') return null
+  if (!isAbsolutePath(home)) throw new RouteFailure('java-invalid', home)
+  if (!hasJavaExecutable(home, projectIo.isFile)) throw new RouteFailure('java-invalid', home)
+  return home
 }

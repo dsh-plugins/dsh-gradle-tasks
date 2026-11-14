@@ -52,7 +52,7 @@ export interface ProjectIo {
   /** Whether `path` names an existing regular file. */
   isFile(path: string): boolean
   /** Read a UTF-8 text file, or undefined when it cannot be read. */
-  readText?(path: string): string | undefined
+  readText(path: string): string | undefined
 }
 
 /** Failures worth reporting with the exact path that caused them. */
@@ -102,7 +102,7 @@ export function findProjectRoot(startDir: string, io: ProjectIo): string | null 
 export function describeProject(rootDir: string, io: ProjectIo): GradleProjectInfo {
   const buildFiles = [...SETTINGS_SCRIPTS, ...BUILD_SCRIPTS].filter(name => io.isFile(join(rootDir, name)))
   const wrapper = WRAPPER_SCRIPTS.find(name => io.isFile(join(rootDir, name))) ?? null
-  const properties = wrapper === null ? undefined : io.readText?.(join(rootDir, WRAPPER_PROPERTIES))
+  const properties = wrapper === null ? undefined : io.readText(join(rootDir, WRAPPER_PROPERTIES))
   return {
     rootDir,
     buildFiles,
