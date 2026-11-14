@@ -1,6 +1,8 @@
 # dsh-gradle-tasks
 
-在 DSH Web 界面的左侧主导航中增加一个「Gradle 任务」面板：识别当前会话所在项目是否为 Gradle 工程，按任务声明的 `group` 分文件夹列出全部任务，双击任务即用项目自带的 wrapper 与选定的 JDK 运行，构建输出实时回传到面板内置终端。
+在 DSH 的**右侧边栏**增加一个「Gradle 任务」标签页：识别当前会话所在项目是否为 Gradle 工程，按任务声明的 `group` 分文件夹列出全部任务，双击任务即用项目自带的 wrapper 与选定的 JDK 运行，构建输出实时回传到面板内置终端。
+
+面板以标签页形式挂在右侧边栏：右侧边栏的「开始」页会多出一张「Gradle 任务」卡片，点开即在侧栏内打开该页；同一个标签也可以在分屏或浮窗中打开。
 
 ![面板预览](docs/preview.svg)
 
@@ -21,7 +23,7 @@
 
 针对 DSH `0.2.2-rc.x` 编写与验证，`engines.dsh` 为 `>=0.2.2-rc.2 <0.3.0`。
 
-宿主端只依赖公开服务：`webServer`、`connection`、`subprocess`、`sessions`、`workingDirectory`。运行期不导入任何 `@deepseek-ai/*` 值，接口形状以 `interface` 就地声明，因此插件不会因上游包的小版本调整而失效。客户端产物同样不引入宿主内部包，只使用 `slots` 与可选的 `locale`、`sidebarRight`、`uiWorkspace` 服务。
+宿主端只依赖公开服务：`webServer`、`connection`、`subprocess`、`sessions`、`workingDirectory`。运行期不导入任何 `@deepseek-ai/*` 值，接口形状以 `interface` 就地声明，因此插件不会因上游包的小版本调整而失效。客户端注册为右侧边栏的标签类型（`ctx.sidebarRightTabs` + `sidebar.right.pane.tab` 插槽），只在 `dsh.client.inject` 中声明对 `@deepseek-ai/dsh-client-ui-sidebar-right` 的启动顺序依赖；`locale`、`uiWorkspace` 为可选服务。
 
 ## 构建
 
@@ -54,7 +56,7 @@ dsh plugin --profile web add <本目录绝对路径>
       name: 'dsh-gradle-tasks'
 ```
 
-安装并重启后，左侧导航栏出现「Gradle 任务」图标，点击即可打开面板。
+安装并重启后，展开右侧边栏的「开始」页，会看到「Gradle 任务」卡片；点开即在该侧栏内打开页面，之后它作为标签留在侧栏顶部。
 
 ## 运行时行为
 

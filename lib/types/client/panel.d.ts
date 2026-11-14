@@ -1,24 +1,25 @@
 /**
- * The Gradle Tasks page: a project header with the JDK selector, the task
- * folders on the left, and the build terminal on the right.
+ * The Gradle Tasks page: the project header with the JDK selector, the task
+ * folders, and the build terminal, stacked for the right Sidebar's narrow
+ * column.
  *
  * The panel owns no Gradle knowledge of its own — it asks the Host what the
  * project is and which tasks it declares, and streams one run at a time.
  */
 import * as React from 'react';
 import type { Translator } from './i18n.ts';
-/** Services the panel is registered with. */
-export interface GradleTasksPanelServices {
+/** Props the tab seat injects for one occurrence. */
+export interface GradleTasksPanelProps {
+    /** Session whose directory the page inspects by default. */
+    readonly sessionId: string;
     /** Copy bound to the Host language. */
     readonly translator: Translator;
-    /** The Session most recently shown on screen, tracked across panel switches. */
-    readonly currentSessionId: () => string | undefined;
     /** Host directory picker, when the surrounding UI provides one. */
     readonly pickDirectory?: (() => Promise<string | null>) | undefined;
 }
 /**
  * The Gradle Tasks page component.
- * @param props - injected services described by {@link GradleTasksPanelServices}.
+ * @param props - injected services described by {@link GradleTasksPanelProps}.
  * @returns the rendered page.
  */
-export declare function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactElement;
+export declare function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactElement;

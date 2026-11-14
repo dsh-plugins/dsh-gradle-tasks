@@ -2,7 +2,7 @@
   "name": "dsh-gradle-tasks",
   "version": "0.1.0",
   "type": "module",
-  "description": "Gradle task browser for the DSH Web sidebar: detects the Session's Gradle project, lists every task grouped by its declared group, runs a task from its project wrapper with a chosen JDK, and streams the build output back into the panel.",
+  "description": "Gradle task browser for the DSH right Sidebar: detects the Session's Gradle project, lists every task grouped by its declared group, runs a task from its project wrapper with a chosen JDK, and streams the build output back into the panel.",
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
@@ -65,7 +65,10 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
     }
   }
 }

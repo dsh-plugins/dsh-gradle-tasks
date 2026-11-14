@@ -1,10 +1,10 @@
 /**
- * Panel styles, expressed against the Host's theme tokens.
+ * Panel styles for the right Sidebar's narrow column.
  *
  * Every token read carries the Host name first and a neutral fallback second,
- * so the panel keeps its layout and stays legible even before a theme has
- * defined the aliases. The output area is deliberately dark in both themes:
- * build logs are terminal output and read better on a terminal ground.
+ * so the panel keeps its layout and stays legible even before a theme defines
+ * the aliases. The output area is deliberately dark in both themes: build logs
+ * are terminal output and read better on a terminal ground.
  */
 
 /** The stylesheet this plugin installs for the lifetime of its Client run. */
@@ -21,21 +21,13 @@ export const STYLES = `
 }
 .gt-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, #e5e7eb);
-  background: var(--dsw-alias-bg-layer-1, #ffffff);
-}
-.gt-title {
-  font-size: 14px;
-  font-weight: 600;
-  white-space: nowrap;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 8px;
 }
 .gt-path {
-  flex: 1 1 240px;
-  min-width: 160px;
+  width: 100%;
+  box-sizing: border-box;
   padding: 5px 9px;
   border: 1px solid var(--dsw-alias-border-l2, #d0d7de);
   border-radius: 6px;
@@ -49,13 +41,20 @@ export const STYLES = `
   outline: 2px solid var(--dsw-alias-brand-primary, #2563eb);
   outline-offset: -1px;
 }
+.gt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
 .gt-button {
-  padding: 5px 11px;
+  padding: 4px 10px;
   border: 1px solid var(--dsw-alias-border-l2, #d0d7de);
   border-radius: 6px;
   background: var(--dsw-alias-bg-layer-1, #ffffff);
   color: inherit;
   font: inherit;
+  font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -72,9 +71,11 @@ export const STYLES = `
 }
 .gt-java {
   display: inline-flex;
+  flex: 1 1 auto;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
+  min-width: 0;
+  padding: 3px 8px;
   border: 1px solid var(--dsw-alias-border-l2, #d0d7de);
   border-radius: 6px;
   background: var(--dsw-alias-bg-layer-1, #ffffff);
@@ -84,8 +85,9 @@ export const STYLES = `
   font-size: 12px;
 }
 .gt-select {
-  max-width: 260px;
-  padding: 3px 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 0;
   border: 0;
   background: transparent;
   color: inherit;
@@ -96,27 +98,23 @@ export const STYLES = `
 .gt-select:focus {
   outline: none;
 }
-.gt-main {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
+.gt-hint {
+  padding: 0 12px 8px;
+  color: var(--dsw-alias-label-secondary, #6b7280);
+  font-size: 11.5px;
+  word-break: break-word;
 }
-.gt-tasks {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 auto;
-  width: min(42%, 430px);
-  min-width: 250px;
-  min-height: 0;
-  border-right: 1px solid var(--dsw-alias-border-l1, #e5e7eb);
-  background: var(--dsw-alias-bg-layer-1, #ffffff);
+.gt-hint-detail {
+  opacity: 0.8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
 }
 .gt-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, #e5e7eb);
+  padding: 6px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1, #e5e7eb);
 }
 .gt-filter {
   flex: 1 1 auto;
@@ -129,23 +127,18 @@ export const STYLES = `
   font: inherit;
   font-size: 12px;
 }
-.gt-hint {
-  padding: 4px 12px 8px;
-  color: var(--dsw-alias-label-secondary, #6b7280);
-  font-size: 11px;
-}
 .gt-scroll {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 90px;
   overflow: auto;
-  padding: 4px 8px 16px;
+  padding: 2px 8px 10px;
 }
 .gt-group-head {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 5px 6px;
+  padding: 4px 6px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -158,6 +151,11 @@ export const STYLES = `
 }
 .gt-group-head:hover {
   background: var(--dsw-alias-bg-layer-2, #f3f4f6);
+}
+.gt-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .gt-caret {
   display: inline-block;
@@ -175,7 +173,8 @@ export const STYLES = `
 .gt-task {
   display: block;
   width: 100%;
-  padding: 4px 8px 4px 24px;
+  box-sizing: border-box;
+  padding: 4px 8px 4px 22px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -194,6 +193,7 @@ export const STYLES = `
 .gt-task-name {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12.5px;
+  word-break: break-word;
 }
 .gt-task-desc {
   overflow: hidden;
@@ -203,62 +203,73 @@ export const STYLES = `
   white-space: nowrap;
 }
 .gt-empty {
-  padding: 24px 16px;
+  padding: 20px 12px;
   color: var(--dsw-alias-label-secondary, #6b7280);
   font-size: 12px;
   text-align: center;
 }
 .gt-terminal {
   display: flex;
-  flex: 1 1 0;
+  flex: 0 0 auto;
   flex-direction: column;
-  min-width: 0;
-  min-height: 0;
+  height: 42%;
+  min-height: 150px;
+  border-top: 1px solid var(--dsw-alias-border-l1, #e5e7eb);
+  background: #0b1020;
 }
 .gt-term-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, #e5e7eb);
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #1f2937;
 }
 .gt-badge {
   padding: 1px 8px;
-  border: 1px solid var(--dsw-alias-border-l2, #d0d7de);
+  border: 1px solid #4b5563;
   border-radius: 999px;
+  color: #d1d5db;
   font-size: 11px;
   white-space: nowrap;
 }
 .gt-badge.gt-ok {
-  border-color: var(--dsw-alias-state-success-primary, #15803d);
-  color: var(--dsw-alias-state-success-primary, #15803d);
+  border-color: #15803d;
+  color: #4ade80;
 }
 .gt-badge.gt-bad {
-  border-color: var(--dsw-alias-state-error-primary, #b91c1c);
-  color: var(--dsw-alias-state-error-primary, #b91c1c);
+  border-color: #b91c1c;
+  color: #f87171;
 }
 .gt-badge.gt-busy {
-  border-color: var(--dsw-alias-brand-primary, #2563eb);
-  color: var(--dsw-alias-brand-primary, #2563eb);
+  border-color: #2563eb;
+  color: #93c5fd;
 }
 .gt-command {
   overflow: hidden;
-  flex: 1 1 200px;
+  flex: 1 1 120px;
   min-width: 0;
-  color: var(--dsw-alias-label-secondary, #6b7280);
+  color: #9ca3af;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.gt-terminal .gt-button {
+  border-color: #374151;
+  background: transparent;
+  color: #d1d5db;
+  font-size: 11.5px;
+}
+.gt-terminal .gt-button:hover:not(:disabled) {
+  background: #1f2937;
 }
 .gt-term-body {
   flex: 1 1 auto;
   min-height: 0;
   margin: 0;
   overflow: auto;
-  padding: 10px 12px 16px;
-  background: #0b1020;
+  padding: 8px 10px 12px;
   color: #e5e7eb;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -266,18 +277,7 @@ export const STYLES = `
   white-space: pre-wrap;
   word-break: break-word;
 }
-.gt-term-body .gt-term-muted {
+.gt-term-muted {
   color: #9ca3af;
-}
-@media (max-width: 900px) {
-  .gt-main {
-    flex-direction: column;
-  }
-  .gt-tasks {
-    width: auto;
-    max-height: 45%;
-    border-right: 0;
-    border-bottom: 1px solid var(--dsw-alias-border-l1, #e5e7eb);
-  }
 }
 `

@@ -1,74 +1,71 @@
 /**
  * Browser half of dsh-gradle-tasks.
  *
- * Two registrations make the page reachable: a `main` panel keyed by this
- * plugin's panel id, and the matching `sidebar.panellist` icon that selects it.
- * Everything else — detection, task listing, runs — happens over the Host
- * routes this plugin's Node half serves.
+ * The page is a right-Sidebar tab type: `sidebarRightTabs` carries its static
+ * face — the kind, the chip title, and the guide card that opens it — and the
+ * keyed `sidebar.right.pane.tab` seat carries its body. Detection, listing and
+ * runs all happen over the HTTP routes this plugin's Host half serves.
  */
 import type { ClientContext, Disposer, LocaleRegistry } from './context.ts'
 import { GradleTasksIcon } from './icon.tsx'
 import { createTranslator } from './i18n.ts'
 import { DICTIONARIES, NAMESPACE } from './locales.ts'
-import { GradleTasksPanel, type GradleTasksPanelServices } from './panel.tsx'
+import { GradleTasksPanel, type GradleTasksPanelProps } from './panel.tsx'
 import { STYLES } from './styles.ts'
 
 export const name = 'dsh-gradle-tasks'
 
-/** The browser services this plugin needs; the rest are read optionally. */
-export const inject = ['slots']
+/** Browser services this plugin needs: the slot registry and the tab-type registry. */
+export const inject = ['slots', 'sidebarRightTabs']
 
-/** Identity of this plugin's page, shared by the `main` panel and its icon. */
-const PANEL_ID = 'gradle-tasks'
+/** Identity of this tab type in the Sidebar's registry, and the key its body registers under. */
+const TAB_ID = 'dsh-gradle-tasks'
 
-/** The sidebar service face used to remember which Session is on screen. */
-interface SidebarRightFace {
-  readonly mounted?: {
-    getSnapshot(): string | undefined
-    subscribe(listener: () => void): Disposer
-  }
-}
+/** The tab kind callers name when opening the page. */
+const TAB_KIND = 'gradle-tasks'
 
-/** The workspace service face used to offer a native directory picker. */
+/** The guide card that opens this page. */
+const GUIDE_ENTRY_ID = 'gradle-tasks'
+
+/** The workspace service face used to offer the Host's directory picker. */
 interface UiWorkspaceFace {
   pickDirectory(): Promise<string | null>
 }
 
 /**
- * Mount the panel and its icon.
- * @param ctx - browser Context with the slot registry.
+ * Mount the page: its tab type, its body, and its copy.
+ * @param ctx - browser Context with the slot and tab-type registries.
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => installStyles(), 'gradle-tasks: styles')
   registerDictionaries(ctx)
 
   const translator = createTranslator(ctx)
-  const sessions = trackSessions(ctx)
-  ctx.effect(() => sessions.start(), 'gradle-tasks: session tracking')
-
   const workspace = ctx.get('uiWorkspace') as UiWorkspaceFace | undefined
-  const services: GradleTasksPanelServices = {
-    translator,
-    currentSessionId: () => sessions.current(),
-    ...workspace === undefined
-      ? {}
-      : { pickDirectory: () => workspace.pickDirectory() },
-  }
 
-  ctx.effect(() => ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main',
-    key: PANEL_ID,
-    locale: NAMESPACE,
-    inject: () => services,
-  }, GradleTasksPanel)), 'gradle-tasks: main panel')
+  ctx.effect(() => ctx.sidebarRightTabs.register({
+    id: TAB_ID,
+    kind: TAB_KIND,
+    priority: 'extension',
+    title: () => translator.t('panel.title'),
+    guide: [{
+      id: GUIDE_ENTRY_ID,
+      order: 30,
+      title: () => translator.t('panel.title'),
+      description: () => translator.t('panel.description'),
+      icon: GradleTasksIcon,
+    }],
+  }), 'gradle-tasks: tab type')
 
-  ctx.effect(() => ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist',
-    id: PANEL_ID,
-    order: 10,
-    locale: NAMESPACE,
-    label: () => translator.t('panel.title'),
-  }, GradleTasksIcon)), 'gradle-tasks: panel icon')
+  ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+    name: 'sidebar.right.pane.tab',
+    key: TAB_ID,
+    inject: (sessionId: string): GradleTasksPanelProps => ({
+      sessionId,
+      translator,
+      ...workspace === undefined ? {} : { pickDirectory: () => workspace.pickDirectory() },
+    }),
+  }, GradleTasksPanel)), 'gradle-tasks: tab body')
 }
 
 /**
@@ -97,38 +94,4 @@ function registerDictionaries(ctx: ClientContext): void {
   const locale = ctx.get('locale') as LocaleRegistry | undefined
   if (locale === undefined) return
   ctx.effect(() => locale.register(NAMESPACE, DICTIONARIES), 'gradle-tasks: dictionaries')
-}
-
-/** Tracks the Session on screen even while this plugin's own panel is showing. */
-interface SessionTracker {
-  /** The Session to ask the Host about. */
-  current(): string | undefined
-  /** Begin observing selection changes. */
-  start(): Disposer
-}
-
-/**
- * Follow the right Sidebar's on-screen Session.
- *
- * A global panel replaces the centre column, which clears the service's live
- * value, so the last Session seen is retained: a person who opens this page
- * from a Session still expects that Session's project.
- * @param ctx - browser Context.
- * @returns the tracker.
- */
-function trackSessions(ctx: ClientContext): SessionTracker {
-  const sidebar = ctx.get('sidebarRight') as SidebarRightFace | undefined
-  const mounted = sidebar?.mounted
-  let latest = mounted?.getSnapshot()
-  return {
-    current: () => {
-      const live = mounted?.getSnapshot()
-      if (live !== undefined) latest = live
-      return latest
-    },
-    start: () => mounted?.subscribe(() => {
-      const next = mounted.getSnapshot()
-      if (next !== undefined) latest = next
-    }) ?? (() => {}),
-  }
 }

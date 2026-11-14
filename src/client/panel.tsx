@@ -1,6 +1,7 @@
 /**
- * The Gradle Tasks page: a project header with the JDK selector, the task
- * folders on the left, and the build terminal on the right.
+ * The Gradle Tasks page: the project header with the JDK selector, the task
+ * folders, and the build terminal, stacked for the right Sidebar's narrow
+ * column.
  *
  * The panel owns no Gradle knowledge of its own — it asks the Host what the
  * project is and which tasks it declares, and streams one run at a time.
@@ -30,12 +31,12 @@ const MAX_OUTPUT_CHARS = 300_000
 /** How often buffered build output is committed to React state, in milliseconds. */
 const OUTPUT_FLUSH_MS = 90
 
-/** Services the panel is registered with. */
-export interface GradleTasksPanelServices {
+/** Props the tab seat injects for one occurrence. */
+export interface GradleTasksPanelProps {
+  /** Session whose directory the page inspects by default. */
+  readonly sessionId: string
   /** Copy bound to the Host language. */
   readonly translator: Translator
-  /** The Session most recently shown on screen, tracked across panel switches. */
-  readonly currentSessionId: () => string | undefined
   /** Host directory picker, when the surrounding UI provides one. */
   readonly pickDirectory?: (() => Promise<string | null>) | undefined
 }
@@ -141,11 +142,11 @@ function filterGroups(groups: readonly GradleTaskGroup[], filter: string): Gradl
 
 /**
  * The Gradle Tasks page component.
- * @param props - injected services described by {@link GradleTasksPanelServices}.
+ * @param props - injected services described by {@link GradleTasksPanelProps}.
  * @returns the rendered page.
  */
-export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactElement {
-  const { translator, currentSessionId, pickDirectory } = props
+export function GradleTasksPanel(props: GradleTasksPanelProps): React.ReactElement {
+  const { sessionId, translator, pickDirectory } = props
   const t = useCopy(translator)
   const [location, setLocation] = React.useState<Location | null>(null)
   const [groups, setGroups] = React.useState<readonly GradleTaskGroup[]>([])
@@ -217,7 +218,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
    * @param ticket - request identity taken before the call.
    */
   const scan = React.useCallback(async (path: string | null, jdk: string | null, ticket: number): Promise<void> => {
-    const listing = await fetchTasks({ sessionId: currentSessionId(), path: path ?? undefined }, jdk)
+    const listing = await fetchTasks({ sessionId, path: path ?? undefined }, jdk)
     if (ticket !== request.current) return
     if (!listing.ok) {
       setGroups([])
@@ -231,7 +232,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     setProblem(null)
     setGroups(listing.groups)
     setScanMs(listing.durationMs)
-  }, [currentSessionId, flushOutput])
+  }, [sessionId, flushOutput])
 
   /** Ask the Host what this location is, then which tasks it declares. */
   const load = React.useCallback(async (nextOverride: string | null): Promise<void> => {
@@ -240,7 +241,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     setBusy(true)
     setProblem(null)
     try {
-      const state = await fetchState({ sessionId: currentSessionId(), path: nextOverride ?? undefined })
+      const state = await fetchState({ sessionId, path: nextOverride ?? undefined })
       if (ticket !== request.current) return
       if (!state.ok) {
         setLocation(null)
@@ -268,7 +269,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     } finally {
       if (ticket === request.current) setBusy(false)
     }
-  }, [currentSessionId, javaHome, scan])
+  }, [sessionId, javaHome, scan])
 
   const firstLoad = React.useRef(true)
   React.useEffect(() => {
@@ -326,11 +327,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     setOutput('')
     setRun({ taskPath: task.path, command: '', phase: 'running', code: null, durationMs: 0 })
     try {
-      const started = await startTaskRun(
-        { sessionId: currentSessionId(), path: override ?? undefined },
-        task.path,
-        javaHome,
-      )
+      const started = await startTaskRun({ sessionId, path: override ?? undefined }, task.path, javaHome)
       if (!started.ok) {
         setRun({ taskPath: task.path, command: '', phase: 'failed', code: null, durationMs: 0 })
         setOutput(describeFailure({ code: started.error, detail: started.detail }, t))
@@ -365,7 +362,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
       setRun({ taskPath: task.path, command: '', phase: 'failed', code: null, durationMs: 0 })
       setOutput(describeFailure(failureFrom(error), t))
     }
-  }, [run, stopStreaming, currentSessionId, override, javaHome, t, appendOutput, flushOutput])
+  }, [run, stopStreaming, sessionId, override, javaHome, t, appendOutput, flushOutput])
 
   /** Terminate the running build; its exit event then settles the badge as stopped. */
   const stopRun = React.useCallback(async (): Promise<void> => {
@@ -407,8 +404,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
 
   return (
     <div className="gt-root">
-      <header className="gt-header">
-        <span className="gt-title">{t('panel.title')}</span>
+      <div className="gt-header">
         <input
           className="gt-path"
           value={draft}
@@ -420,110 +416,114 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
             applyPath(event.currentTarget.value)
           }}
         />
-        {pickDirectory === undefined ? null : (
-          <button className="gt-button" type="button" onClick={() => { void chooseDirectory() }} disabled={busy}>
-            {t('toolbar.pickDirectory')}
-          </button>
-        )}
-        <button className="gt-button gt-primary" type="button" onClick={() => { applyPath(draft) }} disabled={busy}>
-          {busy ? t('status.scanning') : t('toolbar.reloadTasks')}
-        </button>
-        <label className="gt-java" title={t('toolbar.javaHint')}>
-          <span className="gt-java-label">{t('toolbar.java')}</span>
-          <select
-            className="gt-select"
-            value={javaHome ?? ''}
-            onChange={(event) => { chooseJava(event.target.value) }}
-          >
-            {location !== null && location.jdks.length === 0 ? <option value="">{t('toolbar.javaMissing')}</option> : null}
-            {location?.jdks.map(candidate => (
-              <option key={candidate.home} value={candidate.home} title={candidate.home}>
-                {candidate.variable}
-                {candidate.version === null ? '' : ` (${candidate.version})`}
-              </option>
-            ))}
-          </select>
-        </label>
-      </header>
-      <div className="gt-main">
-        <section className="gt-tasks">
-          <div className="gt-toolbar">
-            <input
-              className="gt-filter"
-              value={filter}
-              placeholder={t('tasks.filter')}
-              onChange={(event) => { setFilter(event.target.value) }}
-            />
-            <span className="gt-count">{total}</span>
-          </div>
-          <div className="gt-hint">
-            {statusLine}
-            {location?.project == null ? null : (
-              <div>
-                {location.project.wrapper === null
-                  ? t('status.noWrapper')
-                  : t('status.wrapper', { version: location.project.wrapperDistribution ?? location.project.wrapper })}
-              </div>
-            )}
-          </div>
-          <div className="gt-scroll">
-            {visible.length === 0 ? (
-              <div className="gt-empty">{groups.length > 0 ? t('tasks.empty') : t('panel.description')}</div>
-            ) : visible.map((group) => {
-              const name = group.group === '' ? t('tasks.ungrouped') : group.group
-              const open = !collapsed.includes(group.group)
-              return (
-                <div key={group.group} className="gt-group">
-                  <button
-                    className="gt-group-head"
-                    type="button"
-                    aria-expanded={open}
-                    onClick={() => { toggleGroup(group.group) }}
-                  >
-                    <span className={open ? 'gt-caret gt-open' : 'gt-caret'}>▶</span>
-                    <span>{name}</span>
-                    <span className="gt-count">{group.tasks.length}</span>
-                  </button>
-                  {open ? group.tasks.map(task => (
-                    <button
-                      key={task.path}
-                      className={selected === task.path ? 'gt-task gt-selected' : 'gt-task'}
-                      type="button"
-                      title={task.path}
-                      onClick={() => { setSelected(task.path) }}
-                      onDoubleClick={() => { void runTask(task) }}
-                    >
-                      <div className="gt-task-name">{taskLabel(task)}</div>
-                      {task.description === '' ? null : <div className="gt-task-desc">{task.description}</div>}
-                    </button>
-                  )) : null}
-                </div>
-              )
-            })}
-          </div>
-        </section>
-        <section className="gt-terminal">
-          <div className="gt-term-head">
-            <span className={badge.className}>{badge.text}</span>
-            <span className="gt-command" title={run?.command ?? ''}>
-              {run === null ? t('tasks.runHint') : run.taskPath}
-            </span>
-            {run?.phase === 'running' ? (
-              <button className="gt-button" type="button" onClick={() => { void stopRun() }}>{t('run.stop')}</button>
-            ) : null}
-            <button
-              className="gt-button"
-              type="button"
-              onClick={() => { buffer.current = ''; setOutput('') }}
-              disabled={output === ''}
-            >
-              {t('run.clear')}
+        <div className="gt-actions">
+          {pickDirectory === undefined ? null : (
+            <button className="gt-button" type="button" onClick={() => { void chooseDirectory() }} disabled={busy}>
+              {t('toolbar.pickDirectory')}
             </button>
+          )}
+          <button className="gt-button gt-primary" type="button" onClick={() => { applyPath(draft) }} disabled={busy}>
+            {busy ? t('status.scanning') : t('toolbar.reloadTasks')}
+          </button>
+          <label className="gt-java" title={t('toolbar.javaHint')}>
+            <span className="gt-java-label">{t('toolbar.java')}</span>
+            <select
+              className="gt-select"
+              value={javaHome ?? ''}
+              onChange={(event) => { chooseJava(event.target.value) }}
+            >
+              {location !== null && location.jdks.length === 0
+                ? <option value="">{t('toolbar.javaMissing')}</option>
+                : null}
+              {location?.jdks.map(candidate => (
+                <option key={candidate.home} value={candidate.home} title={candidate.home}>
+                  {candidate.variable}
+                  {candidate.version === null ? '' : ` (${candidate.version})`}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div className="gt-hint">
+        <div>{statusLine}</div>
+        {location?.project == null ? null : (
+          <div className="gt-hint-detail">
+            {location.project.wrapper === null
+              ? t('status.noWrapper')
+              : t('status.wrapper', { version: location.project.wrapperDistribution ?? location.project.wrapper })}
           </div>
-          <pre className="gt-term-body" ref={terminal}>
-            {output === '' ? <span className="gt-term-muted">{run === null ? t('run.idle') : ''}</span> : output}
-          </pre>
-        </section>
+        )}
+      </div>
+
+      <div className="gt-toolbar">
+        <input
+          className="gt-filter"
+          value={filter}
+          placeholder={t('tasks.filter')}
+          onChange={(event) => { setFilter(event.target.value) }}
+        />
+        <span className="gt-count">{total}</span>
+      </div>
+
+      <div className="gt-scroll">
+        {visible.length === 0 ? (
+          <div className="gt-empty">{groups.length > 0 ? t('tasks.empty') : t('tasks.runHint')}</div>
+        ) : visible.map((group) => {
+          const name = group.group === '' ? t('tasks.ungrouped') : group.group
+          const open = !collapsed.includes(group.group)
+          return (
+            <div key={group.group}>
+              <button
+                className="gt-group-head"
+                type="button"
+                aria-expanded={open}
+                onClick={() => { toggleGroup(group.group) }}
+              >
+                <span className={open ? 'gt-caret gt-open' : 'gt-caret'}>▶</span>
+                <span className="gt-group-name">{name}</span>
+                <span className="gt-count">{group.tasks.length}</span>
+              </button>
+              {open ? group.tasks.map(task => (
+                <button
+                  key={task.path}
+                  className={selected === task.path ? 'gt-task gt-selected' : 'gt-task'}
+                  type="button"
+                  title={task.path}
+                  onClick={() => { setSelected(task.path) }}
+                  onDoubleClick={() => { void runTask(task) }}
+                >
+                  <div className="gt-task-name">{taskLabel(task)}</div>
+                  {task.description === '' ? null : <div className="gt-task-desc">{task.description}</div>}
+                </button>
+              )) : null}
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="gt-terminal">
+        <div className="gt-term-head">
+          <span className={badge.className}>{badge.text}</span>
+          <span className="gt-command" title={run?.command ?? ''}>
+            {run === null ? t('tasks.runHint') : run.taskPath}
+          </span>
+          {run?.phase === 'running' ? (
+            <button className="gt-button" type="button" onClick={() => { void stopRun() }}>{t('run.stop')}</button>
+          ) : null}
+          <button
+            className="gt-button"
+            type="button"
+            onClick={() => { buffer.current = ''; setOutput('') }}
+            disabled={output === ''}
+          >
+            {t('run.clear')}
+          </button>
+        </div>
+        <pre className="gt-term-body" ref={terminal}>
+          {output === '' ? <span className="gt-term-muted">{run === null ? t('run.idle') : ''}</span> : output}
+        </pre>
       </div>
     </div>
   )

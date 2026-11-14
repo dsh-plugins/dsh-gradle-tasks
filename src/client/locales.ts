@@ -13,7 +13,7 @@ export const NAMESPACE = 'gradleTasks'
 
 const zh = {
   'panel.title': 'Gradle 任务',
-  'panel.description': '双击左侧任务即可运行，构建输出显示在右侧终端',
+  'panel.description': '浏览并运行当前项目的 Gradle 任务',
   'toolbar.reloadTasks': '重新扫描任务',
   'toolbar.pickDirectory': '选择目录',
   'toolbar.java': 'Java',
@@ -57,7 +57,7 @@ const zh = {
 
 const en: Record<keyof typeof zh, string> = {
   'panel.title': 'Gradle Tasks',
-  'panel.description': 'Double-click a task on the left to run it; the build output appears in the terminal on the right',
+  'panel.description': 'Browse and run the current project’s Gradle tasks',
   'toolbar.reloadTasks': 'Rescan tasks',
   'toolbar.pickDirectory': 'Choose directory',
   'toolbar.java': 'Java',
