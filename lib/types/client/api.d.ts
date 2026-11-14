@@ -5,11 +5,17 @@
  * generated Remote code; the browser's cookie travels with each same-origin
  * request, which is the same admission the shipped routes rely on.
  */
-import { type RunEvent, type RunResponse, type StateResponse, type TasksResponse } from '../shared/protocol.ts';
+import { type FailureCode, type RunEvent, type RunResponse, type StateResponse, type TasksResponse } from '../shared/protocol.ts';
 /** Where the panel is looking: a Session, an explicit directory, or both. */
 export interface Locator {
     readonly sessionId?: string | undefined;
     readonly path?: string | undefined;
+}
+/** A failure that happened before the Host could answer, reported like any other. */
+export declare class TransportFailure extends Error {
+    readonly detail: string;
+    readonly code: FailureCode;
+    constructor(detail: string);
 }
 /** Detect the project and enumerate JDKs. */
 export declare function fetchState(locator: Locator): Promise<StateResponse>;

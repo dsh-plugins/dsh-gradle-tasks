@@ -45,15 +45,50 @@ export interface JdkCandidate {
   readonly variable: string
   /** JDK installation directory, always with a `bin/java` executable inside it. */
   readonly home: string
-  /** Value of `java.version` read from the JDK's `release` file, when readable. */
+  /** Value of `JAVA_VERSION` read from the JDK's `release` file, when readable. */
   readonly version: string | null
   /** Whether this candidate is the one selected by default (`JAVA_HOME`). */
   readonly isDefault: boolean
 }
 
+/**
+ * Why a request could not be answered.
+ *
+ * The Host reports the cause as one of these codes and the panel renders it in
+ * the active language, so a message never has to be written twice and a single
+ * failure never reads in the wrong language.
+ */
+export type FailureCode =
+  | 'no-session'
+  | 'session-inactive'
+  | 'directory-missing'
+  | 'directory-relative'
+  | 'not-gradle'
+  | 'wrapper-mismatch'
+  | 'gradle-missing'
+  | 'scan-failed'
+  | 'scan-timeout'
+  | 'no-report'
+  | 'java-invalid'
+  | 'task-missing'
+  | 'field-missing'
+  | 'body-invalid'
+  | 'body-too-large'
+  | 'run-not-found'
+  | 'transport'
+
+/** Fields every failing answer carries. */
+export interface FailureShape {
+  readonly ok: false
+  /** Machine-readable cause, rendered by the panel in the active language. */
+  readonly error: FailureCode
+  /** Path, environment variable, or exit code the message should quote. */
+  readonly detail?: string
+}
+
 /** Answer to the panel's first request: what the directory is and which JDKs exist. */
-export interface StateResponse {
-  readonly ok: boolean
+export type StateResponse = {
+  readonly ok: true
   /** Absolute directory the panel inspects. */
   readonly path: string
   /** Detected project, or null when the directory is not inside a Gradle build. */
@@ -62,31 +97,33 @@ export interface StateResponse {
   readonly jdks: readonly JdkCandidate[]
   /** Host execution platform, so the panel can name the wrapper it will run. */
   readonly platform: 'posix' | 'windows'
-  /** Present when the request itself failed; a non-Gradle directory is not an error. */
-  readonly error?: string
-}
+} | FailureShape
 
 /** Answer to a task-listing request. */
-export interface TasksResponse {
-  readonly ok: boolean
-  readonly project: GradleProjectInfo | null
+export type TasksResponse = {
+  readonly ok: true
+  readonly project: GradleProjectInfo
   /** Tasks bucketed by declared group, groups in display order. */
   readonly groups: readonly GradleTaskGroup[]
   /** Wall-clock time the Gradle invocation took, in milliseconds. */
   readonly durationMs: number
-  /** Present when the invocation failed; the trailing output explains why. */
-  readonly error?: string
-  /** Tail of the Gradle output, always populated so a failure is diagnosable. */
+  /** Tail of the Gradle output, always populated so a failed scan is diagnosable. */
   readonly output: string
-}
+} | (FailureShape & {
+  /** Project identified before the failure, when detection got that far. */
+  readonly project?: GradleProjectInfo
+  /** Tail of the Gradle output; present when a scan actually ran. */
+  readonly output?: string
+  readonly durationMs?: number
+})
 
 /** Answer to a run request. */
-export interface RunResponse {
-  readonly ok: boolean
-  readonly runId?: string
-  readonly command?: string
-  readonly error?: string
-}
+export type RunResponse = {
+  readonly ok: true
+  readonly runId: string
+  /** Command line the Host executed, shown above the terminal. */
+  readonly command: string
+} | FailureShape
 
 /** One line of the newline-delimited JSON stream a run publishes. */
 export type RunEvent =

@@ -7,6 +7,7 @@
  */
 import {
   ROUTE_BASE,
+  type FailureCode,
   type RunEvent,
   type RunResponse,
   type StateResponse,
@@ -19,16 +20,31 @@ export interface Locator {
   readonly path?: string | undefined
 }
 
-/** Read one JSON answer, turning a transport failure into a readable error. */
+/** A failure that happened before the Host could answer, reported like any other. */
+export class TransportFailure extends Error {
+  readonly code: FailureCode = 'transport'
+
+  constructor(readonly detail: string) {
+    super(detail)
+    this.name = 'TransportFailure'
+  }
+}
+
+/** Read one JSON answer, turning a transport failure into a routable code. */
 async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init)
-  if (!response.ok) throw new Error(`${url} 返回 ${response.status}`)
+  let response: Response
+  try {
+    response = await fetch(url, init)
+  } catch (error) {
+    throw new TransportFailure(error instanceof Error ? error.message : String(error))
+  }
+  if (!response.ok) throw new TransportFailure(`${url} → HTTP ${response.status}`)
   const text = await response.text()
   try {
     return JSON.parse(text) as T
   } catch {
     // A non-JSON body means the request reached something other than this route.
-    throw new Error(`${url} 的响应不是 JSON：${text.slice(0, 200)}`)
+    throw new TransportFailure(`${url} → ${text.slice(0, 200)}`)
   }
 }
 
@@ -99,7 +115,7 @@ export function streamTaskRun(
         signal: abort.signal,
         headers: { accept: 'application/x-ndjson' },
       })
-      if (response.body === null) throw new Error('运行输出流不可读')
+      if (response.body === null) throw new TransportFailure(`/run/stream → HTTP ${response.status}`)
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -118,7 +134,7 @@ export function streamTaskRun(
       if (buffer.trim() !== '') onEvent(JSON.parse(buffer) as RunEvent)
     } catch (error) {
       if (abort.signal.aborted) return
-      onError(error instanceof Error ? error : new Error(String(error)))
+      onError(error instanceof Error ? error : new TransportFailure(String(error)))
     }
   })()
   return () => { abort.abort() }

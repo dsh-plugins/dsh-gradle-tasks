@@ -7,15 +7,14 @@
  */
 import * as React from 'react'
 import type {
+  FailureCode,
   GradleProjectInfo,
   GradleTask,
   GradleTaskGroup,
   JdkCandidate,
   RunEvent,
-  StateResponse,
-  TasksResponse,
 } from '../shared/protocol.ts'
-import { fetchState, fetchTasks, startTaskRun, stopTaskRun, streamTaskRun } from './api.ts'
+import { fetchState, fetchTasks, startTaskRun, stopTaskRun, streamTaskRun, TransportFailure } from './api.ts'
 import type { Translator } from './i18n.ts'
 import { useCopy } from './i18n.ts'
 
@@ -40,6 +39,20 @@ export interface GradleTasksPanelServices {
   readonly pickDirectory?: (() => Promise<string | null>) | undefined
 }
 
+/** One failure the panel renders in the active language. */
+interface PanelFailure {
+  readonly code: FailureCode
+  readonly detail?: string | undefined
+}
+
+/** What the Host reported about the inspected directory. */
+interface Location {
+  readonly path: string
+  readonly project: GradleProjectInfo | null
+  readonly jdks: readonly JdkCandidate[]
+  readonly platform: 'posix' | 'windows'
+}
+
 /** What one build looks like to the panel. */
 interface RunView {
   readonly taskPath: string
@@ -47,6 +60,17 @@ interface RunView {
   readonly phase: 'running' | 'succeeded' | 'failed' | 'stopped'
   readonly code: number | null
   readonly durationMs: number
+}
+
+/** Render one failure code as text in the active language. */
+function describeFailure(failure: PanelFailure, t: Translator['t']): string {
+  return t(`fail.${failure.code}` as Parameters<Translator['t']>[0], { detail: failure.detail ?? '' })
+}
+
+/** Turn any thrown value into the failure the panel renders. */
+function failureFrom(error: unknown): PanelFailure {
+  if (error instanceof TransportFailure) return { code: 'transport', detail: error.detail }
+  return { code: 'transport', detail: error instanceof Error ? error.message : String(error) }
 }
 
 /** Read a JSON string array from storage, tolerating absent or broken values. */
@@ -101,7 +125,7 @@ function formatDuration(milliseconds: number): string {
   return `${Math.floor(seconds / 60)} min ${Math.round(seconds % 60)} s`
 }
 
-/** Filter one group's tasks by a case-insensitive substring of path or description. */
+/** Filter tasks by a case-insensitive substring of path or description. */
 function filterGroups(groups: readonly GradleTaskGroup[], filter: string): GradleTaskGroup[] {
   const needle = filter.trim().toLowerCase()
   if (needle === '') return [...groups]
@@ -122,13 +146,14 @@ function filterGroups(groups: readonly GradleTaskGroup[], filter: string): Gradl
 export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactElement {
   const { translator, currentSessionId, pickDirectory } = props
   const t = useCopy(translator)
-  const [state, setState] = React.useState<StateResponse | null>(null)
-  const [tasks, setTasks] = React.useState<TasksResponse | null>(null)
+  const [location, setLocation] = React.useState<Location | null>(null)
+  const [groups, setGroups] = React.useState<readonly GradleTaskGroup[]>([])
+  const [scanMs, setScanMs] = React.useState(0)
   const [override, setOverride] = React.useState<string | null>(() => readStored(PATH_KEY))
   const [draft, setDraft] = React.useState('')
   const [javaHome, setJavaHome] = React.useState<string | null>(() => readStored(JAVA_KEY))
   const [busy, setBusy] = React.useState(false)
-  const [problem, setProblem] = React.useState<string | null>(null)
+  const [problem, setProblem] = React.useState<PanelFailure | null>(null)
   const [filter, setFilter] = React.useState('')
   const [selected, setSelected] = React.useState<string | null>(null)
   const [collapsed, setCollapsed] = React.useState<string[]>(() => readStoredList(COLLAPSED_KEY))
@@ -179,43 +204,56 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     node.scrollTop = node.scrollHeight
   }, [output])
 
+  /** Read the task report for one location, with a chosen JDK. */
+  const scan = React.useCallback(async (path: string | null, jdk: string | null): Promise<void> => {
+    const locator = { sessionId: currentSessionId(), path: path ?? undefined }
+    const listing = await fetchTasks(locator, jdk)
+    if (!listing.ok) {
+      setGroups([])
+      setProblem({ code: listing.error, detail: listing.detail })
+      if (listing.output !== undefined) {
+        buffer.current = listing.output
+        flushOutput()
+      }
+      return
+    }
+    setProblem(null)
+    setGroups(listing.groups)
+    setScanMs(listing.durationMs)
+  }, [currentSessionId, flushOutput])
+
   /** Ask the Host what this location is, then which tasks it declares. */
   const load = React.useCallback(async (nextOverride: string | null): Promise<void> => {
     setBusy(true)
     setProblem(null)
     try {
-      const locator = { sessionId: currentSessionId(), path: nextOverride ?? undefined }
-      const nextState = await fetchState(locator)
-      setState(nextState)
-      if (!nextState.ok) {
-        setTasks(null)
-        setProblem(nextState.error ?? t('status.failed'))
+      const state = await fetchState({ sessionId: currentSessionId(), path: nextOverride ?? undefined })
+      if (!state.ok) {
+        setLocation(null)
+        setGroups([])
+        setProblem({ code: state.error, detail: state.detail })
         return
       }
-      setDraft(nextState.path)
-      const chosen = resolveJavaHome(javaHome, nextState.jdks)
+      setLocation(state)
+      setDraft(state.path)
+      const chosen = resolveJavaHome(javaHome, state.jdks)
       if (chosen !== javaHome) {
         setJavaHome(chosen)
         writeStored(JAVA_KEY, chosen)
       }
-      if (nextState.project === null) {
-        setTasks(null)
+      if (state.project === null) {
+        setGroups([])
+        setProblem({ code: 'not-gradle', detail: state.path })
         return
       }
-      const listing = await fetchTasks(locator, chosen)
-      setTasks(listing)
-      if (!listing.ok) {
-        setProblem(listing.error ?? t('status.failed'))
-        buffer.current = listing.output
-        flushOutput()
-      }
+      await scan(nextOverride, chosen)
     } catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error))
-      setTasks(null)
+      setProblem(failureFrom(error))
+      setGroups([])
     } finally {
       setBusy(false)
     }
-  }, [currentSessionId, javaHome, t, flushOutput])
+  }, [currentSessionId, javaHome, scan])
 
   const firstLoad = React.useRef(true)
   React.useEffect(() => {
@@ -240,31 +278,19 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
       const picked = await pickDirectory()
       if (picked !== null && picked !== '') applyPath(picked)
     } catch (error) {
-      setProblem(error instanceof Error ? error.message : String(error))
+      setProblem(failureFrom(error))
     }
   }, [pickDirectory, applyPath])
 
-  /** Change the JDK and rescan, because the task report is read from a Gradle run. */
+  /** Change the JDK and rescan, because the task report comes from a Gradle run. */
   const chooseJava = React.useCallback((value: string): void => {
     const next = value === '' ? null : value
     setJavaHome(next)
     writeStored(JAVA_KEY, next)
-    if (state?.project === null || state?.project === undefined) return
+    if (location?.project === null || location?.project === undefined) return
     setBusy(true)
-    void fetchTasks({ sessionId: currentSessionId(), path: override ?? undefined }, next)
-      .then((listing) => {
-        setTasks(listing)
-        if (listing.ok) {
-          setProblem(null)
-          return
-        }
-        setProblem(listing.error ?? t('status.failed'))
-        buffer.current = listing.output
-        flushOutput()
-      })
-      .catch((error: unknown) => { setProblem(error instanceof Error ? error.message : String(error)) })
-      .finally(() => { setBusy(false) })
-  }, [state, currentSessionId, override, t, flushOutput])
+    void scan(override, next).finally(() => { setBusy(false) })
+  }, [location, override, scan])
 
   /** Run one task in the panel's terminal. */
   const runTask = React.useCallback(async (task: GradleTask): Promise<void> => {
@@ -275,15 +301,18 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     setOutput('')
     setRun({ taskPath: task.path, command: '', phase: 'running', code: null, durationMs: 0 })
     try {
-      const locator = { sessionId: currentSessionId(), path: override ?? undefined }
-      const started = await startTaskRun(locator, task.path, javaHome)
-      if (!started.ok || started.runId === undefined) {
-        setRun({ taskPath: task.path, command: started.command ?? '', phase: 'failed', code: null, durationMs: 0 })
-        setOutput(started.error ?? t('status.failed'))
+      const started = await startTaskRun(
+        { sessionId: currentSessionId(), path: override ?? undefined },
+        task.path,
+        javaHome,
+      )
+      if (!started.ok) {
+        setRun({ taskPath: task.path, command: '', phase: 'failed', code: null, durationMs: 0 })
+        setOutput(describeFailure({ code: started.error, detail: started.detail }, t))
         return
       }
       runId.current = started.runId
-      setRun(current => current === null ? current : { ...current, command: started.command ?? '' })
+      setRun(current => current === null ? current : { ...current, command: started.command })
       const onEvent = (event: RunEvent): void => {
         if (event.type === 'chunk') {
           appendOutput(event.text)
@@ -305,12 +334,11 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
             })
         stopping.current = false
       }
-      const onError = (error: Error): void => { appendOutput(`\n${error.message}\n`) }
+      const onError = (error: Error): void => { appendOutput(`\n${describeFailure(failureFrom(error), t)}\n`) }
       detach.current = streamTaskRun(started.runId, onEvent, onError)
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
       setRun({ taskPath: task.path, command: '', phase: 'failed', code: null, durationMs: 0 })
-      setOutput(message)
+      setOutput(describeFailure(failureFrom(error), t))
     }
   }, [run, stopStreaming, currentSessionId, override, javaHome, t, appendOutput, flushOutput])
 
@@ -323,26 +351,17 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
       await stopTaskRun(id)
     } catch (error) {
       stopping.current = false
-      appendOutput(`\n${error instanceof Error ? error.message : String(error)}\n`)
+      appendOutput(`\n${describeFailure(failureFrom(error), t)}\n`)
     }
-  }, [appendOutput])
+  }, [appendOutput, t])
 
-  const groups = tasks?.ok === true ? filterGroups(tasks.groups, filter) : []
-  const project: GradleProjectInfo | null = state?.project ?? null
-  const total = tasks?.ok === true ? tasks.groups.reduce((sum, group) => sum + group.tasks.length, 0) : 0
+  const visible = filterGroups(groups, filter)
+  const total = groups.reduce((sum, group) => sum + group.tasks.length, 0)
   const statusLine = ((): string => {
     if (busy) return t('status.scanning')
-    if (problem !== null) return problem
-    if (state === null) return t('status.noProject')
-    if (state.project === null) return t('status.notGradle')
-    if (tasks?.ok === true) {
-      return t('status.scanned', {
-        count: total,
-        groups: tasks.groups.length,
-        duration: formatDuration(tasks.durationMs),
-      })
-    }
-    return t('status.noProject')
+    if (problem !== null) return describeFailure(problem, t)
+    if (location === null) return t('status.noProject')
+    return t('status.scanned', { count: total, groups: groups.length, duration: formatDuration(scanMs) })
   })()
 
   const badge = ((): { className: string, text: string } => {
@@ -391,8 +410,8 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
             value={javaHome ?? ''}
             onChange={(event) => { chooseJava(event.target.value) }}
           >
-            {state !== null && state.jdks.length === 0 ? <option value="">{t('toolbar.javaMissing')}</option> : null}
-            {state?.jdks.map(candidate => (
+            {location !== null && location.jdks.length === 0 ? <option value="">{t('toolbar.javaMissing')}</option> : null}
+            {location?.jdks.map(candidate => (
               <option key={candidate.home} value={candidate.home} title={candidate.home}>
                 {candidate.variable}
                 {candidate.version === null ? '' : ` (${candidate.version})`}
@@ -414,18 +433,18 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
           </div>
           <div className="gt-hint">
             {statusLine}
-            {project === null ? null : (
+            {location?.project == null ? null : (
               <div>
-                {project.wrapper === null
+                {location.project.wrapper === null
                   ? t('status.noWrapper')
-                  : t('status.wrapper', { version: project.wrapperDistribution ?? project.wrapper })}
+                  : t('status.wrapper', { version: location.project.wrapperDistribution ?? location.project.wrapper })}
               </div>
             )}
           </div>
           <div className="gt-scroll">
-            {groups.length === 0 ? (
-              <div className="gt-empty">{tasks?.ok === true ? t('tasks.empty') : t('panel.description')}</div>
-            ) : groups.map((group) => {
+            {visible.length === 0 ? (
+              <div className="gt-empty">{groups.length > 0 ? t('tasks.empty') : t('panel.description')}</div>
+            ) : visible.map((group) => {
               const name = group.group === '' ? t('tasks.ungrouped') : group.group
               const open = !collapsed.includes(group.group)
               return (

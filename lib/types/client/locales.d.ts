@@ -34,6 +34,24 @@ declare const zh: {
     'run.stopped': string;
     'run.stop': string;
     'run.clear': string;
+    'fail.no-session': string;
+    'fail.session-inactive': string;
+    'fail.directory-missing': string;
+    'fail.directory-relative': string;
+    'fail.not-gradle': string;
+    'fail.wrapper-mismatch': string;
+    'fail.gradle-missing': string;
+    'fail.scan-failed': string;
+    'fail.scan-timeout': string;
+    'fail.no-report': string;
+    'fail.java-invalid': string;
+    'fail.task-missing': string;
+    'fail.field-missing': string;
+    'fail.body-invalid': string;
+    'fail.body-too-large': string;
+    'fail.run-not-found': string;
+    'fail.transport': string;
+    'fail.unknown': string;
 };
 /** Every language this plugin ships, keyed the way the locale service expects. */
 export declare const DICTIONARIES: Record<string, Record<string, string>>;

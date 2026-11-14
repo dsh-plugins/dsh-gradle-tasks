@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Host half of dsh-gradle-tasks.
  *
  * The panel asks three questions and this half answers them over the plugin's
@@ -20,7 +20,6 @@ import {
   groupTasks,
   parseTaskDump,
   TASK_DUMP_SCRIPT,
-  requireAbsolute,
   tailOf,
   wrapperScriptFor,
   type ProjectIo,
@@ -29,6 +28,7 @@ import { collectJdkVariables, hasJavaExecutable, markDefault, readReleaseEntry }
 import { RunRegistry, type SpawnedProcess } from './runs.ts'
 import {
   ROUTE_BASE,
+  type FailureCode,
   type GradleProjectInfo,
   type JdkCandidate,
   type RunResponse,
@@ -87,6 +87,25 @@ interface HostServices {
 /** A Host context carrying the services this plugin declares. */
 type HostContext = Context & HostServices
 
+/** A request that cannot be answered, reported to the panel as a code plus detail. */
+class RouteFailure extends Error {
+  constructor(readonly code: FailureCode, readonly detail?: string) {
+    super(detail === undefined ? code : `${code}: ${detail}`)
+    this.name = 'RouteFailure'
+  }
+}
+
+/** Turn any thrown value into the shape a failing route returns. */
+function failureOf(error: unknown): { readonly ok: false, readonly error: FailureCode, readonly detail?: string } {
+  if (error instanceof RouteFailure) {
+    return error.detail === undefined
+      ? { ok: false, error: error.code }
+      : { ok: false, error: error.code, detail: error.detail }
+  }
+  console.error('gradle-tasks: unexpected failure while answering a route', error)
+  return { ok: false, error: 'scan-failed', detail: error instanceof Error ? error.message : String(error) }
+}
+
 /** Filesystem face handed to the pure Gradle rules. */
 const projectIo: ProjectIo = {
   isFile: (path) => {
@@ -118,7 +137,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() => () => { runs.dispose() }, 'gradle-tasks: runs')
 
   const platform = cachedPlatform(host)
-  const workspace = ensureScratchDirectory()
+  const scratch = ensureScratchDirectory()
 
   ctx.effect(() => host.webServer.register({
     kind: 'exact',
@@ -130,21 +149,16 @@ export function apply(ctx: Context): void {
         const query = queryOf(req)
         const path = resolveDirectory(host, query.get('sessionId'), query.get('path'))
         const root = findProjectRoot(path, projectIo)
-        const project = root === null ? null : describeProject(root, projectIo)
-        const jdks = scanJdks()
         const state: StateResponse = {
           ok: true,
           path,
-          project,
-          jdks,
+          project: root === null ? null : describeProject(root, projectIo),
+          jdks: scanJdks(),
           platform: await platform(),
         }
         sendJson(res, 200, state)
       } catch (error) {
-        sendJson(res, 200, {
-          ok: false, path: '', project: null, jdks: [], platform: 'posix',
-          error: messageOf(error),
-        } satisfies StateResponse)
+        sendJson(res, 200, failureOf(error))
       }
     },
   }), 'gradle-tasks: GET /state')
@@ -158,14 +172,9 @@ export function apply(ctx: Context): void {
       try {
         const query = queryOf(req)
         const path = resolveDirectory(host, query.get('sessionId'), query.get('path'))
-        const response = await listTasks(host, path, await platform(), query.get('javaHome'), workspace)
-        sendJson(res, 200, response)
+        sendJson(res, 200, await listTasks(host, path, await platform(), query.get('javaHome'), scratch))
       } catch (error) {
-        const failure: TasksResponse = {
-          ok: false, project: null, groups: [], durationMs: 0,
-          error: messageOf(error), output: '',
-        }
-        sendJson(res, 200, failure)
+        sendJson(res, 200, failureOf(error) satisfies TasksResponse)
       }
     },
   }), 'gradle-tasks: GET /tasks')
@@ -176,16 +185,14 @@ export function apply(ctx: Context): void {
     handler: async (req, res) => {
       if (rejected(host, req, res)) return
       if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
-      const started = Date.now()
       try {
         const body = await readJsonBody(req)
         const path = resolveDirectory(host, stringField(body, 'sessionId'), stringField(body, 'path'))
         const taskPath = requiredString(body, 'taskPath')
         const javaHome = optionalJavaHome(body)
-        const response = await startRun(host, runs, path, taskPath, javaHome, await platform())
-        sendJson(res, 200, { ...response, durationMs: Date.now() - started })
+        sendJson(res, 200, await startRun(host, runs, path, taskPath, javaHome, await platform()))
       } catch (error) {
-        sendJson(res, 200, { ok: false, error: messageOf(error) } satisfies RunResponse)
+        sendJson(res, 200, failureOf(error) satisfies RunResponse)
       }
     },
   }), 'gradle-tasks: POST /run')
@@ -197,8 +204,10 @@ export function apply(ctx: Context): void {
       if (rejected(host, req, res)) return
       if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
       const id = queryOf(req).get('id') ?? ''
-      const description = runs.describe(id)
-      if (description === undefined) { sendJson(res, 404, { ok: false, error: 'run not found' }); return }
+      if (runs.describe(id) === undefined) {
+        sendJson(res, 404, { ok: false, error: 'run-not-found' } satisfies RunResponse)
+        return
+      }
       res.writeHead(200, {
         'content-type': 'application/x-ndjson; charset=utf-8',
         'cache-control': 'no-store',
@@ -225,10 +234,9 @@ export function apply(ctx: Context): void {
       if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
       try {
         const body = await readJsonBody(req)
-        const stopped = runs.stop(requiredString(body, 'runId'))
-        sendJson(res, 200, { ok: stopped })
+        sendJson(res, 200, { ok: runs.stop(requiredString(body, 'runId')) })
       } catch (error) {
-        sendJson(res, 200, { ok: false, error: messageOf(error) })
+        sendJson(res, 200, failureOf(error))
       }
     },
   }), 'gradle-tasks: POST /run/stop')
@@ -303,17 +311,22 @@ function scanJdks(): JdkCandidate[] {
 function resolveDirectory(host: HostContext, sessionId: string | null, path: string | null): string {
   const explicit = path?.trim()
   if (explicit !== undefined && explicit !== '') {
-    requireAbsolute(explicit)
-    if (!isDirectory(explicit)) throw new Error(`目录不存在：${explicit}`)
+    if (!isAbsolutePath(explicit)) throw new RouteFailure('directory-relative', explicit)
+    if (!isDirectory(explicit)) throw new RouteFailure('directory-missing', explicit)
     return explicit
   }
   const id = sessionId?.trim()
-  if (id === undefined || id === '') throw new Error('当前没有选中的会话，请先选择项目目录')
+  if (id === undefined || id === '') throw new RouteFailure('no-session')
   const session = host.sessions.get(id)
-  if (session === undefined) throw new Error('当前会话尚未激活，请先选择项目目录')
+  if (session === undefined) throw new RouteFailure('session-inactive', id)
   const directory = host.workingDirectory.get(session)
-  if (!isDirectory(directory)) throw new Error(`会话目录不存在：${directory}`)
+  if (!isDirectory(directory)) throw new RouteFailure('directory-missing', directory)
   return directory
+}
+
+/** Whether a path is absolute on the Host platform. */
+function isAbsolutePath(path: string): boolean {
+  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(path)
 }
 
 /** Whether a path names an existing directory. */
@@ -348,16 +361,13 @@ async function resolveScript(
 ): Promise<GradleScript> {
   const wrapper = wrapperScriptFor(project, platform)
   if (wrapper !== null) return { path: join(project.rootDir, wrapper), fromWrapper: true }
-  if (project.wrapper !== null) {
-    throw new Error(`项目只有 ${project.wrapper}，与当前执行平台（${platform}）不匹配`)
-  }
-  let resolved: string
+  if (project.wrapper !== null) throw new RouteFailure('wrapper-mismatch', `${project.wrapper} / ${platform}`)
   try {
-    resolved = await host.subprocess.resolveExecutable('gradle')
-  } catch {
-    throw new Error(`${project.rootDir} 没有 gradle wrapper，PATH 中也找不到 gradle 可执行文件`)
+    return { path: await host.subprocess.resolveExecutable('gradle'), fromWrapper: false }
+  } catch (error) {
+    console.warn('gradle-tasks: no gradle executable on PATH', error)
+    throw new RouteFailure('gradle-missing', project.rootDir)
   }
-  return { path: resolved, fromWrapper: false }
 }
 
 /**
@@ -378,48 +388,35 @@ async function listTasks(
 ): Promise<TasksResponse> {
   const started = Date.now()
   const root = findProjectRoot(path, projectIo)
-  if (root === null) {
-    return {
-      ok: false, project: null, groups: [], durationMs: 0,
-      error: '当前目录不是 Gradle 项目（未找到 settings.gradle[.kts] 或 build.gradle[.kts]）', output: '',
-    }
-  }
+  if (root === null) throw new RouteFailure('not-gradle', path)
   const project = describeProject(root, projectIo)
   const script = await resolveScript(host, project, platform)
   const reportPath = join(scratch, `tasks-${randomUUID()}.txt`)
-  const args = [
+  const argv = gradleArgv(script, [
     '--quiet', '--console=plain',
     '-p', project.rootDir,
     '--init-script', writeDumpScript(scratch),
     `-PdshGradleTasksOut=${reportPath}`,
     'help',
-  ]
-  const argv = gradleArgv(script, args, platform)
+  ], platform)
   const outcome = await collect(host, {
     argv,
     cwd: project.rootDir,
     env: javaEnvironment(javaHome),
     timeoutMs: LIST_TIMEOUT_MS,
   })
-  const report = readReport(reportPath)
-  const tasks = report === null ? [] : parseTaskDump(report)
   const durationMs = Date.now() - started
-  if (report === null && outcome.code !== 0) {
-    return {
-      ok: false, project, groups: [], durationMs,
-      error: `Gradle 执行失败（退出码 ${outcome.code ?? '未知'}）`,
-      output: tailOf(outcome.output, OUTPUT_TAIL_CHARS),
-    }
-  }
+  if (outcome.timedOut) throw new RouteFailure('scan-timeout', tailOf(outcome.output, OUTPUT_TAIL_CHARS))
+  const report = readReport(reportPath)
   if (report === null) {
-    return {
-      ok: false, project, groups: [], durationMs,
-      error: 'Gradle 未产出任务清单',
-      output: tailOf(outcome.output, OUTPUT_TAIL_CHARS),
-    }
+    const code = outcome.code === 0 ? 'no-report' : 'scan-failed'
+    throw new RouteFailure(code, `${String(outcome.code ?? '?')}\n${tailOf(outcome.output, OUTPUT_TAIL_CHARS)}`)
   }
   return {
-    ok: true, project, groups: groupTasks(tasks), durationMs,
+    ok: true,
+    project,
+    groups: groupTasks(parseTaskDump(report)),
+    durationMs,
     output: tailOf(outcome.output, OUTPUT_TAIL_CHARS),
   }
 }
@@ -438,13 +435,15 @@ function readReport(path: string): string | null {
 interface CollectedOutcome {
   readonly code: number | null
   readonly output: string
+  /** True when the time budget expired and the process was terminated. */
+  readonly timedOut: boolean
 }
 
 /**
  * Run one Gradle invocation to completion, collecting its output.
  * @param host - Host context carrying the subprocess provider.
  * @param spec - argv, directory, environment, and the overall time budget.
- * @returns the exit code and the combined output.
+ * @returns the exit code, the combined output, and whether the budget expired.
  */
 function collect(
   host: HostContext,
@@ -471,13 +470,15 @@ function collect(
     }
     sink(handle.stdout)
     sink(handle.stderr)
+    let timedOut = false
     const timer = setTimeout(() => {
+      timedOut = true
       handle.terminate()
     }, spec.timeoutMs)
     timer.unref()
     handle.done.then((outcome) => {
       clearTimeout(timer)
-      resolve({ code: outcome.exitCode, output: chunks.join('') })
+      resolve({ code: outcome.exitCode, output: chunks.join(''), timedOut })
     }, (error: unknown) => {
       clearTimeout(timer)
       reject(error)
@@ -504,13 +505,12 @@ async function startRun(
   platform: 'posix' | 'windows',
 ): Promise<RunResponse> {
   const root = findProjectRoot(path, projectIo)
-  if (root === null) throw new Error('当前目录不是 Gradle 项目')
+  if (root === null) throw new RouteFailure('not-gradle', path)
   const project = describeProject(root, projectIo)
   const script = await resolveScript(host, project, platform)
   const args = [taskPath, '--console=plain']
-  const argv = gradleArgv(script, args, platform)
   const runId = runs.start({
-    argv,
+    argv: gradleArgv(script, args, platform),
     cwd: project.rootDir,
     env: javaEnvironment(javaHome),
     displayCommand: [script.path, ...args].join(' '),
@@ -581,13 +581,21 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
     size += buffer.byteLength
-    if (size > MAX_BODY_BYTES) throw new Error('请求体过大')
+    if (size > MAX_BODY_BYTES) throw new RouteFailure('body-too-large', String(size))
     chunks.push(buffer)
   }
   const text = Buffer.concat(chunks).toString('utf8')
   if (text.trim() === '') return {}
-  const parsed: unknown = JSON.parse(text)
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('请求体必须是 JSON 对象')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    console.warn('gradle-tasks: request body is not JSON', error)
+    throw new RouteFailure('body-invalid', text.slice(0, 200))
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new RouteFailure('body-invalid', text.slice(0, 200))
+  }
   return parsed as Record<string, unknown>
 }
 
@@ -600,7 +608,7 @@ function stringField(body: Record<string, unknown>, key: string): string | null 
 /** Read a required, non-empty string field. */
 function requiredString(body: Record<string, unknown>, key: string): string {
   const value = stringField(body, key)?.trim()
-  if (value === undefined || value === '') throw new Error(`缺少字段 ${key}`)
+  if (value === undefined || value === '') throw new RouteFailure('field-missing', key)
   return value
 }
 
@@ -611,12 +619,7 @@ function requiredString(body: Record<string, unknown>, key: string): string {
 function optionalJavaHome(body: Record<string, unknown>): string | null {
   const value = stringField(body, 'javaHome')?.trim()
   if (value === undefined || value === '') return null
-  requireAbsolute(value)
-  if (!hasJavaExecutable(value, projectIo.isFile)) throw new Error(`不是可用的 JDK 目录：${value}`)
+  if (!isAbsolutePath(value)) throw new RouteFailure('java-invalid', value)
+  if (!hasJavaExecutable(value, projectIo.isFile)) throw new RouteFailure('java-invalid', value)
   return value
-}
-
-/** The message of a thrown value, for a route answer. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
