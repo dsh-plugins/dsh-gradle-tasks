@@ -17,6 +17,7 @@ import type {
 import { fetchState, fetchTasks, startTaskRun, stopTaskRun, streamTaskRun, TransportFailure } from './api.ts'
 import type { Translator } from './i18n.ts'
 import { useCopy } from './i18n.ts'
+import { FAILURE_COPY } from './locales.ts'
 
 /** Browser storage keys this panel owns. */
 const PATH_KEY = 'dsh.gradle-tasks.path'
@@ -64,7 +65,7 @@ interface RunView {
 
 /** Render one failure code as text in the active language. */
 function describeFailure(failure: PanelFailure, t: Translator['t']): string {
-  return t(`fail.${failure.code}` as Parameters<Translator['t']>[0], { detail: failure.detail ?? '' })
+  return t(FAILURE_COPY[failure.code], { detail: failure.detail ?? '' })
 }
 
 /** Turn any thrown value into the failure the panel renders. */
@@ -165,6 +166,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
   const detach = React.useRef<(() => void) | undefined>(undefined)
   const runId = React.useRef<string | null>(null)
   const stopping = React.useRef(false)
+  const request = React.useRef(0)
   const terminal = React.useRef<HTMLPreElement | null>(null)
 
   /** Commit buffered build output to state, keeping the tail only. */
@@ -204,10 +206,19 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     node.scrollTop = node.scrollHeight
   }, [output])
 
-  /** Read the task report for one location, with a chosen JDK. */
-  const scan = React.useCallback(async (path: string | null, jdk: string | null): Promise<void> => {
-    const locator = { sessionId: currentSessionId(), path: path ?? undefined }
-    const listing = await fetchTasks(locator, jdk)
+  /**
+   * Read the task report for one location, with a chosen JDK.
+   *
+   * A scan can take minutes, so the answer is applied only while its ticket is
+   * still the newest: a person who switches directory or JDK mid-scan sees the
+   * report for the choice they ended on, never an earlier one arriving late.
+   * @param path - directory override, or null for the Session's own.
+   * @param jdk - JDK to run the report with.
+   * @param ticket - request identity taken before the call.
+   */
+  const scan = React.useCallback(async (path: string | null, jdk: string | null, ticket: number): Promise<void> => {
+    const listing = await fetchTasks({ sessionId: currentSessionId(), path: path ?? undefined }, jdk)
+    if (ticket !== request.current) return
     if (!listing.ok) {
       setGroups([])
       setProblem({ code: listing.error, detail: listing.detail })
@@ -224,10 +235,13 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
 
   /** Ask the Host what this location is, then which tasks it declares. */
   const load = React.useCallback(async (nextOverride: string | null): Promise<void> => {
+    const ticket = request.current + 1
+    request.current = ticket
     setBusy(true)
     setProblem(null)
     try {
       const state = await fetchState({ sessionId: currentSessionId(), path: nextOverride ?? undefined })
+      if (ticket !== request.current) return
       if (!state.ok) {
         setLocation(null)
         setGroups([])
@@ -246,12 +260,13 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
         setProblem({ code: 'not-gradle', detail: state.path })
         return
       }
-      await scan(nextOverride, chosen)
+      await scan(nextOverride, chosen, ticket)
     } catch (error) {
+      if (ticket !== request.current) return
       setProblem(failureFrom(error))
       setGroups([])
     } finally {
-      setBusy(false)
+      if (ticket === request.current) setBusy(false)
     }
   }, [currentSessionId, javaHome, scan])
 
@@ -288,8 +303,18 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
     setJavaHome(next)
     writeStored(JAVA_KEY, next)
     if (location?.project === null || location?.project === undefined) return
+    const ticket = request.current + 1
+    request.current = ticket
     setBusy(true)
-    void scan(override, next).finally(() => { setBusy(false) })
+    void scan(override, next, ticket)
+      .catch((error: unknown) => {
+        if (ticket !== request.current) return
+        setProblem(failureFrom(error))
+        setGroups([])
+      })
+      .finally(() => {
+        if (ticket === request.current) setBusy(false)
+      })
   }, [location, override, scan])
 
   /** Run one task in the panel's terminal. */
@@ -489,7 +514,7 @@ export function GradleTasksPanel(props: GradleTasksPanelServices): React.ReactEl
             <button
               className="gt-button"
               type="button"
-              onClick={() => { stopStreaming(); setOutput('') }}
+              onClick={() => { buffer.current = ''; setOutput('') }}
               disabled={output === ''}
             >
               {t('run.clear')}

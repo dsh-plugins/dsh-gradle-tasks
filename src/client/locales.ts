@@ -6,6 +6,8 @@
  * neighbouring plugin is absent.
  */
 
+import type { FailureCode } from '../shared/protocol.ts'
+
 /** Copy namespace registered with the locale service. */
 export const NAMESPACE = 'gradleTasks'
 
@@ -18,11 +20,9 @@ const zh = {
   'toolbar.javaMissing': '未发现 JDK',
   'toolbar.javaHint': '运行 Gradle 时使用的 JDK',
   'path.placeholder': '项目目录',
-  'status.notGradle': '当前目录不是 Gradle 项目',
   'status.noProject': '尚未选择目录',
   'status.scanning': '正在扫描任务…',
   'status.scanned': '共 {count} 个任务，{groups} 个分组，耗时 {duration}',
-  'status.failed': '扫描失败',
   'status.wrapper': 'Wrapper {version}',
   'status.noWrapper': '无 wrapper，使用 PATH 中的 gradle',
   'tasks.filter': '过滤任务',
@@ -53,7 +53,6 @@ const zh = {
   'fail.body-too-large': '请求体过大',
   'fail.run-not-found': '找不到该运行记录',
   'fail.transport': '无法连接本地服务：{detail}',
-  'fail.unknown': '未知错误',
 }
 
 const en: Record<keyof typeof zh, string> = {
@@ -65,11 +64,9 @@ const en: Record<keyof typeof zh, string> = {
   'toolbar.javaMissing': 'No JDK found',
   'toolbar.javaHint': 'JDK used to run Gradle',
   'path.placeholder': 'Project directory',
-  'status.notGradle': 'This directory is not a Gradle project',
   'status.noProject': 'No directory selected yet',
   'status.scanning': 'Scanning tasks…',
   'status.scanned': '{count} tasks in {groups} groups, took {duration}',
-  'status.failed': 'Scan failed',
   'status.wrapper': 'Wrapper {version}',
   'status.noWrapper': 'No wrapper, using gradle from PATH',
   'tasks.filter': 'Filter tasks',
@@ -100,7 +97,6 @@ const en: Record<keyof typeof zh, string> = {
   'fail.body-too-large': 'The request body is too large',
   'fail.run-not-found': 'No such run is retained',
   'fail.transport': 'Cannot reach the local service: {detail}',
-  'fail.unknown': 'Unknown error',
 }
 
 /** Every language this plugin ships, keyed the way the locale service expects. */
@@ -108,6 +104,32 @@ export const DICTIONARIES: Record<string, Record<string, string>> = { zh, en }
 
 /** One copy key. */
 export type CopyKey = keyof typeof zh
+
+/**
+ * Copy key for each failure code the Host can report.
+ *
+ * Spelled out rather than built as `` `fail.${code}` `` so a code added to the
+ * protocol without copy is a type error instead of a panel showing a raw key.
+ */
+export const FAILURE_COPY: Record<FailureCode, CopyKey> = {
+  'no-session': 'fail.no-session',
+  'session-inactive': 'fail.session-inactive',
+  'directory-missing': 'fail.directory-missing',
+  'directory-relative': 'fail.directory-relative',
+  'not-gradle': 'fail.not-gradle',
+  'wrapper-mismatch': 'fail.wrapper-mismatch',
+  'gradle-missing': 'fail.gradle-missing',
+  'scan-failed': 'fail.scan-failed',
+  'scan-timeout': 'fail.scan-timeout',
+  'no-report': 'fail.no-report',
+  'java-invalid': 'fail.java-invalid',
+  'task-missing': 'fail.task-missing',
+  'field-missing': 'fail.field-missing',
+  'body-invalid': 'fail.body-invalid',
+  'body-too-large': 'fail.body-too-large',
+  'run-not-found': 'fail.run-not-found',
+  transport: 'fail.transport',
+}
 
 /** Substitute `{name}` placeholders in one template. */
 export function format(template: string, values: Record<string, string | number>): string {

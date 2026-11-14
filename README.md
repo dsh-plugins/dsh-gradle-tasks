@@ -11,8 +11,9 @@
 | Gradle 工程检测 | 从当前会话目录向上查找 `settings.gradle[.kts]` / `build.gradle[.kts]`，命中最先出现的目录即为构建根目录；同时读取 wrapper 名称与 `distributionUrl` |
 | 任务枚举 | 注入初始化脚本 `dump-tasks.gradle`，在 `gradle.projectsEvaluated` 阶段遍历 `allprojects` 下全部 `tasks`，写回 `路径 / group / description` 三列清单 |
 | 分组显示 | 按任务的 `group` 分文件夹，文件夹按名称排序、「未分组」排在最后；文件夹内按 `description` 排序，无描述的任务排在后面，最终以任务路径兜底 |
-| 双击运行 | 双击或回车运行选中任务；优先使用项目 wrapper（`gradlew.bat` / `gradlew`），无 wrapper 时才回退到 `PATH` 中的 `gradle` |
-| 实时输出 | 运行输出经 NDJSON 流回传，面板终端保留最近 30 万字符；运行期间可「停止」终止整棵进程树 |
+| wrapper 优先 | 优先使用项目自带的 `gradlew.bat` / `gradlew`；项目没有 wrapper 时才回退到 `PATH` 中的 `gradle`，两者都没有则明确报错 |
+| 双击运行 | 双击任务即运行；任务路径先按 `:project:task` 形式校验，`--init-script` 一类选项形状的输入在启动进程前就被拒绝 |
+| 实时输出 | 运行输出经 NDJSON 流回传，面板终端保留最近 30 万字符；构建结束即关闭响应，运行期间可「停止」终止整棵进程树 |
 | JDK 选择 | 扫描环境变量中的 `JAVA_HOME`、`JAVA_8`、`JAVA_17`… `JDK_HOME` 等，逐个校验 `bin/java[.exe]` 并读取 `release` 中的 `JAVA_VERSION`；默认选中 `JAVA_HOME`，切换后按新 JDK 重新扫描任务 |
 | 目录覆盖 | 面板标题栏可直接填写绝对路径，或调用宿主目录选择器，用于查看当前会话之外的项目；选择结果记入 `localStorage` |
 
@@ -23,6 +24,8 @@
 宿主端只依赖公开服务：`webServer`、`connection`、`subprocess`、`sessions`、`workingDirectory`。运行期不导入任何 `@deepseek-ai/*` 值，接口形状以 `interface` 就地声明，因此插件不会因上游包的小版本调整而失效。客户端产物同样不引入宿主内部包，只使用 `slots` 与可选的 `locale`、`sidebarRight`、`uiWorkspace` 服务。
 
 ## 构建
+
+开发需要 Node.js `>=24.9.0`（与 DSH 运行时一致）。
 
 ```powershell
 npm install --no-audit --no-fund
@@ -71,7 +74,13 @@ dsh plugin --profile web add <本目录绝对路径>
 
 ### 命令拼装
 
-Windows 下的 `gradlew.bat` 是批处理文件，Node 的子进程接口不能直接执行，因此统一经 `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& '...' 'arg' ..."` 调用：PowerShell 既能启动 `.bat`，也能正确处理含空格的路径。POSIX 下直接执行 `gradlew`。
+Windows 上的 Gradle 入口都是批处理文件（项目的 `gradlew.bat`，以及 `PATH` 里 Gradle 发行版自带的 `gradle.bat`），Node 的子进程接口不能直接执行批处理，因此凡是 `.bat` / `.cmd` 一律经下面这条命令启动：
+
+```text
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& '<script>' '<arg>' ..."
+```
+
+每个参数用单引号字面量包裹，参数内的单引号按 PowerShell 规则写成两个，含空格的路径无需额外处理。POSIX 下直接执行 `gradlew`。
 
 ### JDK 选择
 
@@ -102,6 +111,7 @@ dsh-gradle-tasks/
 
 ## 已知限制
 
-- 任务清单需要一次完整的 Gradle 配置阶段，首次扫描耗时与项目规模相当；面板在扫描期间显示「正在扫描任务…」，可用「停止」以外的刷新重复触发。
+- 任务清单需要一次完整的 Gradle 配置阶段，首次扫描耗时与项目规模相当；扫描期间面板显示「正在扫描任务…」，可直接切换目录或 JDK 重新触发，迟到的旧结果会被丢弃。
 - 面板同一时刻只保留一条运行记录，新的运行会清空上一条输出。
 - 运行结束后保留的转录在宿主端 5 分钟内可重新附加，超过后需要重新运行。
+- 面板以当前用户的身份执行任意 Gradle 构建，其后果与本人在终端里执行 `gradlew` 相同。

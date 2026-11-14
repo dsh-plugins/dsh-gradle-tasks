@@ -1,12 +1,4 @@
 import type { GradleProjectInfo, GradleTask, GradleTaskGroup } from './shared/protocol.ts';
-/** Build script file names Gradle accepts at a project root, in discovery order. */
-export declare const BUILD_SCRIPTS: readonly ["build.gradle.kts", "build.gradle"];
-/** Settings script file names Gradle accepts at a build root, in discovery order. */
-export declare const SETTINGS_SCRIPTS: readonly ["settings.gradle.kts", "settings.gradle"];
-/** Wrapper scripts, in the order a root directory is probed for them. */
-export declare const WRAPPER_SCRIPTS: readonly ["gradlew.bat", "gradlew"];
-/** Path of the wrapper descriptor inside a project root, relative to it. */
-export declare const WRAPPER_PROPERTIES: string;
 /**
  * The initialization script that reports every configured task.
  *
@@ -48,12 +40,6 @@ export declare function findProjectRoot(startDir: string, io: ProjectIo): string
  * @returns the project description; `buildFiles` is empty for a settings-only root.
  */
 export declare function describeProject(rootDir: string, io: ProjectIo): GradleProjectInfo;
-/**
- * Read `distributionUrl` from a Gradle wrapper properties file.
- * @param properties - raw file content.
- * @returns the declared distribution URL, or null when the file declares none.
- */
-export declare function parseDistributionUrl(properties: string): string | null;
 /**
  * Parse the task report an initialization script writes.
  *
@@ -102,9 +88,9 @@ export declare function quotePowerShell(value: string): string;
 /**
  * The argv that runs a command through PowerShell.
  *
- * On Windows a Gradle wrapper is `gradlew.bat`, a batch file the process
- * seam cannot execute directly, so the invocation is handed to PowerShell,
- * which both starts `.bat` files and quotes paths containing spaces.
+ * PowerShell both starts batch scripts and quotes paths containing spaces, so
+ * every Windows Gradle invocation — wrapper or `PATH` executable — goes
+ * through it with single-quoted literals.
  * @param script - wrapper path or executable name.
  * @param args - the Gradle arguments.
  * @returns the full argv, PowerShell first.
@@ -119,8 +105,18 @@ export declare function powerShellArgv(script: string, args: readonly string[]):
  */
 export declare function gradleArgv(script: {
     readonly path: string;
-    readonly fromWrapper: boolean;
 }, args: readonly string[], platform: 'posix' | 'windows'): string[];
+/**
+ * The task path an invocation may name: an optional Gradle project prefix
+ * followed by the task name.
+ *
+ * The value reaches a command line, so anything outside this alphabet — above
+ * all a leading `-`, which Gradle would read as an option such as
+ * `--init-script` — is rejected before a process starts.
+ * @param taskPath - candidate task path.
+ * @returns true for a plain task path such as `build` or `:app:test`.
+ */
+export declare function isTaskPath(taskPath: string): boolean;
 /**
  * Keep the trailing part of a log, so a failure message stays readable.
  * @param text - full log.
@@ -128,10 +124,3 @@ export declare function gradleArgv(script: {
  * @returns the tail, prefixed with a marker when content was dropped.
  */
 export declare function tailOf(text: string, limit: number): string;
-/**
- * Render a path for display relative to a root, using forward slashes.
- * @param root - base directory.
- * @param path - absolute path inside the root.
- * @returns the relative path, or the absolute one when it escapes the root.
- */
-export declare function displayRelative(root: string, path: string): string;

@@ -46,7 +46,6 @@ export type RunListener = (event: RunEvent) => void
 /** One owned Gradle process and its transcript. */
 interface Run {
   readonly id: string
-  readonly displayCommand: string
   readonly startedAt: number
   readonly listeners: Set<RunListener>
   transcript: RunEvent[]
@@ -61,7 +60,6 @@ export interface RunSpec {
   readonly argv: readonly string[]
   readonly cwd: string
   readonly env: Readonly<Record<string, string>>
-  readonly displayCommand: string
   readonly graceMs: number
 }
 
@@ -83,7 +81,6 @@ export class RunRegistry {
     const id = randomUUID()
     const run: Run = {
       id,
-      displayCommand: spec.displayCommand,
       startedAt: Date.now(),
       listeners: new Set(),
       transcript: [],
@@ -144,14 +141,12 @@ export class RunRegistry {
   }
 
   /**
-   * Report the command line and start time of a retained run.
+   * Whether a run is retained, so a stream can be opened for it.
    * @param id - run identity.
-   * @returns the description, or undefined when the run is gone.
+   * @returns true while the transcript is available.
    */
-  describe(id: string): { displayCommand: string, startedAt: number, finished: boolean } | undefined {
-    const run = this.runs.get(id)
-    if (run === undefined) return undefined
-    return { displayCommand: run.displayCommand, startedAt: run.startedAt, finished: run.finished }
+  has(id: string): boolean {
+    return this.runs.has(id)
   }
 
   /** Terminate every running build and forget every transcript. */

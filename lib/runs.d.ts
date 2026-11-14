@@ -34,7 +34,6 @@ export interface RunSpec {
     readonly argv: readonly string[];
     readonly cwd: string;
     readonly env: Readonly<Record<string, string>>;
-    readonly displayCommand: string;
     readonly graceMs: number;
 }
 /** Owns every live run and their transcripts. */
@@ -64,15 +63,11 @@ export declare class RunRegistry {
      */
     stop(id: string): boolean;
     /**
-     * Report the command line and start time of a retained run.
+     * Whether a run is retained, so a stream can be opened for it.
      * @param id - run identity.
-     * @returns the description, or undefined when the run is gone.
+     * @returns true while the transcript is available.
      */
-    describe(id: string): {
-        displayCommand: string;
-        startedAt: number;
-        finished: boolean;
-    } | undefined;
+    has(id: string): boolean;
     /** Terminate every running build and forget every transcript. */
     dispose(): void;
     /** Decode one piped stream into the transcript, splitting frames on characters, not bytes. */

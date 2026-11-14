@@ -23,6 +23,7 @@
     "src/**/*.tsx",
     "cordis.patch.yml",
     "locale/*.json",
+    "docs",
     "icon.svg",
     "README.md",
     "LICENSE"
@@ -56,6 +57,7 @@
     "typescript": "5.9.3"
   },
   "engines": {
+    "node": ">=24.9.0",
     "dsh": ">=0.2.2-rc.2 <0.3.0"
   },
   "dsh": {

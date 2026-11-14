@@ -1,6 +1,3 @@
-import type { JdkCandidate } from './shared/protocol.ts';
-/** The variable whose value is selected when it names a usable JDK. */
-export declare const DEFAULT_JDK_VARIABLE = "JAVA_HOME";
 /** A JDK read from the environment, before its installation is verified. */
 export interface JdkVariable {
     readonly variable: string;
@@ -35,9 +32,3 @@ export declare function readReleaseEntry(text: string, key: string): string | nu
  * @returns true when at least one expected executable exists.
  */
 export declare function hasJavaExecutable(home: string, isFile: (path: string) => boolean, names?: readonly string[]): boolean;
-/**
- * Mark the default candidate and drop entries whose variable repeats a home.
- * @param candidates - verified candidates, already in priority order.
- * @returns candidates carrying `isDefault`.
- */
-export declare function markDefault(candidates: readonly Omit<JdkCandidate, 'isDefault'>[]): JdkCandidate[];

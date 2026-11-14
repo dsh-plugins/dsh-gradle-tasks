@@ -18,9 +18,6 @@ const JDK_SUFFIX = /^(?:_HOME|HOME|_?\d+|_HOME_?\d+|_?\d+_?HOME)?$/i
 /** Variables whose name alone already implies a JDK regardless of the pattern above. */
 const EXPLICIT_VARIABLES = ['JAVA_HOME', 'JDK_HOME', 'JAVA_HOME_OVERRIDE', 'GRADLE_JAVA_HOME']
 
-/** The variable whose value is selected when it names a usable JDK. */
-export const DEFAULT_JDK_VARIABLE = 'JAVA_HOME'
-
 /** A JDK read from the environment, before its installation is verified. */
 export interface JdkVariable {
   readonly variable: string
@@ -127,13 +124,4 @@ export function hasJavaExecutable(
   names: readonly string[] = ['java', 'java.exe'],
 ): boolean {
   return names.some(name => isFile(join(home, 'bin', name)))
-}
-
-/**
- * Mark the default candidate and drop entries whose variable repeats a home.
- * @param candidates - verified candidates, already in priority order.
- * @returns candidates carrying `isDefault`.
- */
-export function markDefault(candidates: readonly Omit<JdkCandidate, 'isDefault'>[]): JdkCandidate[] {
-  return candidates.map((candidate, index) => ({ ...candidate, isDefault: index === 0 }))
 }

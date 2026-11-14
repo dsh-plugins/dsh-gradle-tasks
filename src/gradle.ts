@@ -6,20 +6,20 @@
  * without a real build, and so the Host can feed the same logic from any
  * execution world.
  */
-import { dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import type { GradleProjectInfo, GradleTask, GradleTaskGroup } from './shared/protocol.ts'
 
 /** Build script file names Gradle accepts at a project root, in discovery order. */
-export const BUILD_SCRIPTS = ['build.gradle.kts', 'build.gradle'] as const
+const BUILD_SCRIPTS = ['build.gradle.kts', 'build.gradle'] as const
 
 /** Settings script file names Gradle accepts at a build root, in discovery order. */
-export const SETTINGS_SCRIPTS = ['settings.gradle.kts', 'settings.gradle'] as const
+const SETTINGS_SCRIPTS = ['settings.gradle.kts', 'settings.gradle'] as const
 
 /** Wrapper scripts, in the order a root directory is probed for them. */
-export const WRAPPER_SCRIPTS = ['gradlew.bat', 'gradlew'] as const
+const WRAPPER_SCRIPTS = ['gradlew.bat', 'gradlew'] as const
 
 /** Path of the wrapper descriptor inside a project root, relative to it. */
-export const WRAPPER_PROPERTIES = join('gradle', 'wrapper', 'gradle-wrapper.properties')
+const WRAPPER_PROPERTIES = join('gradle', 'wrapper', 'gradle-wrapper.properties')
 
 /**
  * The initialization script that reports every configured task.
@@ -116,7 +116,7 @@ export function describeProject(rootDir: string, io: ProjectIo): GradleProjectIn
  * @param properties - raw file content.
  * @returns the declared distribution URL, or null when the file declares none.
  */
-export function parseDistributionUrl(properties: string): string | null {
+function parseDistributionUrl(properties: string): string | null {
   for (const line of properties.split(/\r?\n/)) {
     const match = /^\s*distributionUrl\s*=\s*(.+?)\s*$/.exec(line)
     if (match !== null && match[1] !== undefined && match[1] !== '') return match[1]
@@ -230,11 +230,22 @@ export function quotePowerShell(value: string): string {
 }
 
 /**
+ * Whether a command is a batch script the process seam cannot execute
+ * directly. Gradle ships `gradlew.bat` and, on Windows, `gradle.bat`, and
+ * `node:child_process` starts neither without a command interpreter.
+ * @param path - executable name or path.
+ * @returns true for `.bat` and `.cmd`.
+ */
+function isBatchScript(path: string): boolean {
+  return /\.(?:bat|cmd)$/i.test(path)
+}
+
+/**
  * The argv that runs a command through PowerShell.
  *
- * On Windows a Gradle wrapper is `gradlew.bat`, a batch file the process
- * seam cannot execute directly, so the invocation is handed to PowerShell,
- * which both starts `.bat` files and quotes paths containing spaces.
+ * PowerShell both starts batch scripts and quotes paths containing spaces, so
+ * every Windows Gradle invocation — wrapper or `PATH` executable — goes
+ * through it with single-quoted literals.
  * @param script - wrapper path or executable name.
  * @param args - the Gradle arguments.
  * @returns the full argv, PowerShell first.
@@ -252,12 +263,26 @@ export function powerShellArgv(script: string, args: readonly string[]): string[
  * @returns the argv to hand to the subprocess provider.
  */
 export function gradleArgv(
-  script: { readonly path: string, readonly fromWrapper: boolean },
+  script: { readonly path: string },
   args: readonly string[],
   platform: 'posix' | 'windows',
 ): string[] {
-  if (platform === 'windows' && script.fromWrapper) return powerShellArgv(script.path, args)
+  if (platform === 'windows' && isBatchScript(script.path)) return powerShellArgv(script.path, args)
   return [script.path, ...args]
+}
+
+/**
+ * The task path an invocation may name: an optional Gradle project prefix
+ * followed by the task name.
+ *
+ * The value reaches a command line, so anything outside this alphabet — above
+ * all a leading `-`, which Gradle would read as an option such as
+ * `--init-script` — is rejected before a process starts.
+ * @param taskPath - candidate task path.
+ * @returns true for a plain task path such as `build` or `:app:test`.
+ */
+export function isTaskPath(taskPath: string): boolean {
+  return /^:?[\w.-]+(?::[\w.-]+)*$/.test(taskPath)
 }
 
 /**
@@ -269,16 +294,4 @@ export function gradleArgv(
 export function tailOf(text: string, limit: number): string {
   if (text.length <= limit) return text
   return `… ${text.length - limit} earlier characters omitted …\n${text.slice(text.length - limit)}`
-}
-
-/**
- * Render a path for display relative to a root, using forward slashes.
- * @param root - base directory.
- * @param path - absolute path inside the root.
- * @returns the relative path, or the absolute one when it escapes the root.
- */
-export function displayRelative(root: string, path: string): string {
-  const relativePath = relative(root, path)
-  if (relativePath === '' || relativePath.startsWith('..')) return path
-  return relativePath.split(sep).join('/')
 }

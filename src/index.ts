@@ -8,7 +8,7 @@
  * panel until the build ends.
  */
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -21,10 +21,11 @@ import {
   parseTaskDump,
   TASK_DUMP_SCRIPT,
   tailOf,
+  isTaskPath,
   wrapperScriptFor,
   type ProjectIo,
 } from './gradle.ts'
-import { collectJdkVariables, hasJavaExecutable, markDefault, readReleaseEntry } from './jdk.ts'
+import { collectJdkVariables, hasJavaExecutable, readReleaseEntry } from './jdk.ts'
 import { RunRegistry, type SpawnedProcess } from './runs.ts'
 import {
   ROUTE_BASE,
@@ -138,6 +139,7 @@ export function apply(ctx: Context): void {
 
   const platform = cachedPlatform(host)
   const scratch = ensureScratchDirectory()
+  const scriptPath = writeDumpScript(scratch)
 
   ctx.effect(() => host.webServer.register({
     kind: 'exact',
@@ -172,7 +174,7 @@ export function apply(ctx: Context): void {
       try {
         const query = queryOf(req)
         const path = resolveDirectory(host, query.get('sessionId'), query.get('path'))
-        sendJson(res, 200, await listTasks(host, path, await platform(), query.get('javaHome'), scratch))
+        sendJson(res, 200, await listTasks(host, path, await platform(), query.get('javaHome'), scratch, scriptPath))
       } catch (error) {
         sendJson(res, 200, failureOf(error) satisfies TasksResponse)
       }
@@ -189,6 +191,7 @@ export function apply(ctx: Context): void {
         const body = await readJsonBody(req)
         const path = resolveDirectory(host, stringField(body, 'sessionId'), stringField(body, 'path'))
         const taskPath = requiredString(body, 'taskPath')
+        if (!isTaskPath(taskPath)) throw new RouteFailure('task-missing', taskPath)
         const javaHome = optionalJavaHome(body)
         sendJson(res, 200, await startRun(host, runs, path, taskPath, javaHome, await platform()))
       } catch (error) {
@@ -204,7 +207,7 @@ export function apply(ctx: Context): void {
       if (rejected(host, req, res)) return
       if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
       const id = queryOf(req).get('id') ?? ''
-      if (runs.describe(id) === undefined) {
+      if (!runs.has(id)) {
         sendJson(res, 404, { ok: false, error: 'run-not-found' } satisfies RunResponse)
         return
       }
@@ -217,8 +220,20 @@ export function apply(ctx: Context): void {
       const detach = runs.subscribe(id, (event) => {
         if (closed) return
         res.write(`${JSON.stringify(event)}\n`)
+        // The exit event is the transcript's last, so the response ends with
+        // it: a follower that never reads another byte cannot leak a socket.
+        if (event.type === 'exit') {
+          closed = true
+          res.end()
+        }
       })
-      if (detach === undefined) { res.end(); return }
+      if (detach === undefined) {
+        // The run expired between the retention check and this subscribe.
+        sendJson(res, 404, { ok: false, error: 'run-not-found' } satisfies RunResponse)
+        return
+      }
+      // A finished run replays its transcript and is closed by the exit above.
+      if (closed) { detach(); return }
       res.on('close', () => {
         closed = true
         detach()
@@ -253,10 +268,10 @@ function ensureScratchDirectory(): string {
 }
 
 /**
- * Write the initialization script, keeping it free of a byte-order mark.
- * Gradle's Groovy parser rejects a leading U+FEFF, and `writeFileSync` with an
- * explicit utf8 encoding never adds one — which is why the text is not written
- * through a shell redirection.
+ * Write the initialization script once per plugin lifetime, keeping it free of
+ * a byte-order mark. Gradle's Groovy parser rejects a leading U+FEFF, and
+ * `writeFileSync` with an explicit utf8 encoding never adds one — which is why
+ * the text is not written through a shell redirection.
  * @param directory - scratch directory.
  * @returns the script path.
  */
@@ -274,13 +289,24 @@ function writeDumpScript(directory: string): string {
 function cachedPlatform(host: HostContext): () => Promise<'posix' | 'windows'> {
   let pending: Promise<'posix' | 'windows'> | undefined
   return () => {
-    pending ??= host.subprocess.terminalEnvironment().then(environment => environment.platform)
+    pending ??= host.subprocess.terminalEnvironment()
+      .then(environment => environment.platform)
+      .catch((error: unknown) => {
+        // A failed probe is retried on the next request instead of pinning the
+        // rejection for the life of the plugin.
+        pending = undefined
+        throw error
+      })
     return pending
   }
 }
 
 /**
  * Enumerate the JDKs the Host environment declares.
+ *
+ * A variable only counts once its directory really holds a `java` executable,
+ * so a stale or mistyped entry never reaches the selector. The first surviving
+ * candidate — by construction `JAVA_HOME` when it is usable — is the default.
  * @returns verified candidates, the default one first.
  */
 function scanJdks(): JdkCandidate[] {
@@ -294,7 +320,7 @@ function scanJdks(): JdkCandidate[] {
         version: release === undefined ? null : readReleaseEntry(release, 'JAVA_VERSION'),
       }
     })
-  return markDefault(verified)
+  return verified.map((candidate, index) => ({ ...candidate, isDefault: index === 0 }))
 }
 
 /**
@@ -339,12 +365,6 @@ function isDirectory(path: string): boolean {
   }
 }
 
-/** Where a Gradle command comes from in one project. */
-interface GradleScript {
-  readonly path: string
-  readonly fromWrapper: boolean
-}
-
 /**
  * Pick the command that runs Gradle for a project: the project's own wrapper
  * first, because the build was authored against that distribution, and the
@@ -352,18 +372,18 @@ interface GradleScript {
  * @param host - Host context carrying the subprocess provider.
  * @param project - the detected project.
  * @param platform - execution platform.
- * @returns the command to run.
+ * @returns the executable and its fixed leading arguments.
  */
 async function resolveScript(
   host: HostContext,
   project: GradleProjectInfo,
   platform: 'posix' | 'windows',
-): Promise<GradleScript> {
+): Promise<{ readonly path: string }> {
   const wrapper = wrapperScriptFor(project, platform)
-  if (wrapper !== null) return { path: join(project.rootDir, wrapper), fromWrapper: true }
+  if (wrapper !== null) return { path: join(project.rootDir, wrapper) }
   if (project.wrapper !== null) throw new RouteFailure('wrapper-mismatch', `${project.wrapper} / ${platform}`)
   try {
-    return { path: await host.subprocess.resolveExecutable('gradle'), fromWrapper: false }
+    return { path: await host.subprocess.resolveExecutable('gradle') }
   } catch (error) {
     console.warn('gradle-tasks: no gradle executable on PATH', error)
     throw new RouteFailure('gradle-missing', project.rootDir)
@@ -376,7 +396,8 @@ async function resolveScript(
  * @param path - directory the panel inspected.
  * @param platform - execution platform.
  * @param javaHome - JDK to run this listing with, or null for the environment default.
- * @param scratch - directory for the script and the report.
+ * @param scratch - directory for the temporary report.
+ * @param scriptPath - the initialization script, written once at mount.
  * @returns the grouped task report.
  */
 async function listTasks(
@@ -385,6 +406,7 @@ async function listTasks(
   platform: 'posix' | 'windows',
   javaHome: string | null,
   scratch: string,
+  scriptPath: string,
 ): Promise<TasksResponse> {
   const started = Date.now()
   const root = findProjectRoot(path, projectIo)
@@ -395,7 +417,7 @@ async function listTasks(
   const argv = gradleArgv(script, [
     '--quiet', '--console=plain',
     '-p', project.rootDir,
-    '--init-script', writeDumpScript(scratch),
+    '--init-script', scriptPath,
     `-PdshGradleTasksOut=${reportPath}`,
     'help',
   ], platform)
@@ -407,7 +429,7 @@ async function listTasks(
   })
   const durationMs = Date.now() - started
   if (outcome.timedOut) throw new RouteFailure('scan-timeout', tailOf(outcome.output, OUTPUT_TAIL_CHARS))
-  const report = readReport(reportPath)
+  const report = takeReport(reportPath)
   if (report === null) {
     const code = outcome.code === 0 ? 'no-report' : 'scan-failed'
     throw new RouteFailure(code, `${String(outcome.code ?? '?')}\n${tailOf(outcome.output, OUTPUT_TAIL_CHARS)}`)
@@ -421,13 +443,15 @@ async function listTasks(
   }
 }
 
-/** Read the task report, or null when Gradle never wrote one. */
-function readReport(path: string): string | null {
+/** Read the task report and remove the temporary file Gradle wrote. */
+function takeReport(path: string): string | null {
   try {
     return readFileSync(path, 'utf8')
   } catch (error) {
     console.warn(`gradle-tasks: no task report at ${path}`, error)
     return null
+  } finally {
+    rmSync(path, { force: true })
   }
 }
 
@@ -513,7 +537,6 @@ async function startRun(
     argv: gradleArgv(script, args, platform),
     cwd: project.rootDir,
     env: javaEnvironment(javaHome),
-    displayCommand: [script.path, ...args].join(' '),
     graceMs: TERMINATE_GRACE_MS,
   })
   return { ok: true, runId, command: [script.path, ...args].join(' ') }

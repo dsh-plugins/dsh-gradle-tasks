@@ -115,7 +115,9 @@ export function streamTaskRun(
         signal: abort.signal,
         headers: { accept: 'application/x-ndjson' },
       })
-      if (response.body === null) throw new TransportFailure(`/run/stream → HTTP ${response.status}`)
+      if (!response.ok || response.body === null) {
+        throw new TransportFailure(`/run/stream → HTTP ${response.status}`)
+      }
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''

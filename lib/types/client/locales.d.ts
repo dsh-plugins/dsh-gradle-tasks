@@ -5,6 +5,7 @@
  * mounted, and read directly otherwise, so the panel is never blank because a
  * neighbouring plugin is absent.
  */
+import type { FailureCode } from '../shared/protocol.ts';
 /** Copy namespace registered with the locale service. */
 export declare const NAMESPACE = "gradleTasks";
 declare const zh: {
@@ -16,11 +17,9 @@ declare const zh: {
     'toolbar.javaMissing': string;
     'toolbar.javaHint': string;
     'path.placeholder': string;
-    'status.notGradle': string;
     'status.noProject': string;
     'status.scanning': string;
     'status.scanned': string;
-    'status.failed': string;
     'status.wrapper': string;
     'status.noWrapper': string;
     'tasks.filter': string;
@@ -51,12 +50,18 @@ declare const zh: {
     'fail.body-too-large': string;
     'fail.run-not-found': string;
     'fail.transport': string;
-    'fail.unknown': string;
 };
 /** Every language this plugin ships, keyed the way the locale service expects. */
 export declare const DICTIONARIES: Record<string, Record<string, string>>;
 /** One copy key. */
 export type CopyKey = keyof typeof zh;
+/**
+ * Copy key for each failure code the Host can report.
+ *
+ * Spelled out rather than built as `` `fail.${code}` `` so a code added to the
+ * protocol without copy is a type error instead of a panel showing a raw key.
+ */
+export declare const FAILURE_COPY: Record<FailureCode, CopyKey>;
 /** Substitute `{name}` placeholders in one template. */
 export declare function format(template: string, values: Record<string, string | number>): string;
 export {};
