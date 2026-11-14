@@ -23,6 +23,7 @@ import {
   isTaskPath,
   parseTaskDump,
   shellCommandLine,
+  shellKindOf,
   TASK_DUMP_SCRIPT,
   tailOf,
   wrapperScriptFor,
@@ -84,7 +85,15 @@ interface SpawnedProcess {
 /** A Session-owned terminal as this plugin needs it. */
 interface AgentTerminalHandle {
   readonly id: string
-  readonly info: { readonly state: string, readonly control: string, readonly title: string }
+  readonly info: {
+    readonly state: string
+    readonly control: string
+    readonly title: string
+    /** Directory the shell started in; the reuse check must match it. */
+    readonly cwd: string
+    /** The shell this terminal actually started, which decides the quoting. */
+    readonly shell: { readonly path: string }
+  }
   /** Output revision; advances as the shell produces something. */
   readonly revision: number
   /** Resolve once the next output change is applied, or reject when the wait aborts. */
@@ -609,23 +618,28 @@ async function runTask(input: RunInput): Promise<RunResponse> {
   if (root === null) throw new RouteFailure('not-gradle', directory)
   const project = describeProject(root, projectIo)
   const script = await resolveScript(host, project, platform)
-  const args = [taskPath, '--console=plain', ...offline ? ['--offline'] : []]
-  const command = shellCommandLine(script, args, platform)
 
   const agent = host.agents.get(sessionId)
   if (agent === undefined) throw new RouteFailure('session-inactive', sessionId)
   const session = host.sessions.get(sessionId)
   if (session === undefined) throw new RouteFailure('session-inactive', sessionId)
 
-  const reusable = reusableTerminal(terminals.get(sessionId), openTerminalIds)
+  const reusable = reusableTerminal(terminals.get(sessionId), openTerminalIds, project.rootDir)
   const terminal = reusable ?? await openTerminal(host, {
     agent,
     session,
     sessionId,
     cwd: project.rootDir,
     env: javaEnvironment(javaHome),
+    platform,
   })
   terminals.set(sessionId, { sessionId, handle: terminal })
+
+  // The command is quoted for the shell the terminal actually started, not for
+  // the platform: a `cmd.exe` terminal reads `&` as a command separator.
+  const kind = shellKindOf(terminal.info.shell.path, platform)
+  const args = [taskPath, '--console=plain', ...offline ? ['--offline'] : []]
+  const command = shellCommandLine(script, args, kind)
 
   await awaitShell(terminal)
   await terminal.write(`${command}\r`)
@@ -667,13 +681,19 @@ async function awaitShell(terminal: AgentTerminalHandle): Promise<void> {
 
 /**
  * The terminal a run may continue in.
+ *
+ * A terminal started in another directory cannot run this build: the command
+ * carries no `-p`, so Gradle reads the shell's own working directory, and a
+ * person who moved their Session to another project must get a terminal there.
  * @param record - the terminal this plugin last opened for the Session.
  * @param openTerminalIds - terminals the asking window currently shows as tabs.
+ * @param rootDir - the build root this run belongs to.
  * @returns that terminal, or undefined when a new one is needed.
  */
 function reusableTerminal(
   record: TerminalRecord | undefined,
   openTerminalIds: readonly string[],
+  rootDir: string,
 ): AgentTerminalHandle | undefined {
   if (record === undefined) return undefined
   const { handle } = record
@@ -682,7 +702,14 @@ function reusableTerminal(
   // hijack their session, so the next run gets a terminal of its own.
   if (handle.info.control !== 'agent') return undefined
   if (!openTerminalIds.includes(handle.id)) return undefined
+  if (!sameDirectory(handle.info.cwd, rootDir)) return undefined
   return handle
+}
+
+/** Whether two absolute paths name the same directory, ignoring Windows case and a trailing separator. */
+function sameDirectory(left: string, right: string): boolean {
+  const normalize = (path: string): string => path.replace(/[\\/]+$/, '').replaceAll('\\', '/')
+  return normalize(left).toLowerCase() === normalize(right).toLowerCase()
 }
 
 /**
@@ -699,6 +726,7 @@ async function openTerminal(
     readonly sessionId: string
     readonly cwd: string
     readonly env: Readonly<Record<string, string>>
+    readonly platform: 'posix' | 'windows'
   },
 ): Promise<AgentTerminalHandle> {
   const title = terminalTitleOf(request.cwd)
@@ -709,13 +737,29 @@ async function openTerminal(
       cols: TERMINAL_COLS,
       rows: TERMINAL_ROWS,
       policy: host.sandboxPolicy.resolve({ session: request.session }),
-      preferredShells: [],
+      preferredShells: preferredShellsFor(request.platform),
       env: request.env,
     }, AbortSignal.timeout(30_000))
   } catch (error) {
     console.error(`gradle-tasks: cannot open a terminal for ${request.sessionId}`, error)
     throw new RouteFailure('terminal-failed', error instanceof Error ? error.message : String(error))
   }
+}
+
+/**
+ * The shells to try before the platform default.
+ *
+ * On Windows the default is `cmd.exe`, which reads this plugin's PowerShell
+ * quoting as literal text; PowerShell starts batch wrappers with the call
+ * operator and quotes each argument, so it is asked for first. `pwsh` covers
+ * PowerShell 7+, `powershell` the Windows PowerShell every supported release
+ * still ships. A terminal that gets neither is handled by
+ * {@link shellKindOf}, which quotes for `cmd.exe` instead.
+ * @param platform - the terminal's platform.
+ * @returns executable names in preference order.
+ */
+function preferredShellsFor(platform: 'posix' | 'windows'): readonly string[] {
+  return platform === 'windows' ? ['pwsh', 'powershell'] : []
 }
 
 /** The tab title for a build terminal: the project directory's name. */

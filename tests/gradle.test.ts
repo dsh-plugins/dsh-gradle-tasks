@@ -11,9 +11,11 @@ import {
   parseTaskDump,
   powerShellArgv,
   projectPathOf,
+  quoteCmd,
   quotePosix,
   quotePowerShell,
   shellCommandLine,
+  shellKindOf,
   tailOf,
   type ProjectIo,
 } from '../src/gradle.ts'
@@ -133,13 +135,35 @@ test('gradleArgv starts a native executable directly on Windows', () => {
 
 test('shellCommandLine quotes every argument for the shell that runs it', () => {
   assert.equal(
-    shellCommandLine('C:\\a b\\gradlew.bat', [':build', '--offline'], 'windows'),
+    shellCommandLine('C:\\a b\\gradlew.bat', [':build', '--offline'], 'powershell'),
     "& 'C:\\a b\\gradlew.bat' ':build' '--offline'",
+  )
+  assert.equal(
+    shellCommandLine('C:\\a b\\gradlew.bat', [':build', '--offline'], 'cmd'),
+    '"C:\\a b\\gradlew.bat" ":build" "--offline"',
   )
   assert.equal(
     shellCommandLine('/p/gradlew', [':build', '--offline'], 'posix'),
     "'/p/gradlew' ':build' '--offline'",
   )
+})
+
+test('shellCommandLine never puts a call operator in front of a cmd command', () => {
+  // `&` separates commands in cmd.exe, so it would run the wrapper path as one.
+  assert.equal(shellCommandLine('gradlew.bat', [':jar'], 'cmd').startsWith('&'), false)
+})
+
+test('shellKindOf reads the terminal shell rather than the platform default', () => {
+  assert.equal(shellKindOf('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', 'windows'), 'powershell')
+  assert.equal(shellKindOf('C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'windows'), 'powershell')
+  assert.equal(shellKindOf('C:\\Windows\\System32\\cmd.exe', 'windows'), 'cmd')
+  assert.equal(shellKindOf('C:\\Program Files\\Git\\bin\\bash.exe', 'windows'), 'posix')
+  assert.equal(shellKindOf('/bin/bash', 'posix'), 'posix')
+  assert.equal(shellKindOf('/usr/bin/fish', 'posix'), 'posix')
+})
+
+test('quoteCmd wraps a value in double quotes', () => {
+  assert.equal(quoteCmd('C:\\a b\\gradlew.bat'), '"C:\\a b\\gradlew.bat"')
 })
 
 test('quotePosix escapes an embedded quote so the argument stays one word', () => {

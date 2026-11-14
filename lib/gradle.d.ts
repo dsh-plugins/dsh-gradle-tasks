@@ -166,17 +166,40 @@ export declare function fingerprintConfiguration(version: number, inputs: readon
  */
 export declare function quotePosix(value: string): string;
 /**
+ * Quote one argument for `cmd.exe`.
+ *
+ * cmd has no escape for a quote inside a quoted word, and neither a task path
+ * nor a wrapper path can contain one, so double quotes are enough and also keep
+ * spaces and `&`, `|`, `>` from being read as operators.
+ * @param value - the argument.
+ * @returns the double-quoted argument.
+ */
+export declare function quoteCmd(value: string): string;
+/** The shell families whose quoting rules differ. */
+export type ShellKind = 'powershell' | 'cmd' | 'posix';
+/**
+ * Which quoting rules a shell executable needs.
+ *
+ * The terminal's own shell decides how typed text is parsed, and this plugin
+ * does not get to assume one: a box with no PowerShell still gets a `cmd.exe`
+ * terminal, where `&` is a command separator rather than a call operator.
+ * @param shellPath - the terminal's shell executable.
+ * @param platform - platform the terminal runs on.
+ * @returns the quoting family.
+ */
+export declare function shellKindOf(shellPath: string, platform: 'posix' | 'windows'): ShellKind;
+/**
  * The command line typed into a terminal to run one Gradle invocation.
  *
  * The person's shell decides how the text is parsed, so every argument is a
- * quoted literal: a wrapper path containing spaces, a task path containing
- * dots, and Windows paths in general all survive intact.
+ * quoted literal for that shell: a wrapper path containing spaces, a task path
+ * containing dots, and Windows paths in general all survive intact.
  * @param script - wrapper path, or the `gradle` executable.
  * @param args - the Gradle arguments.
- * @param platform - platform the terminal's shell runs on.
+ * @param kind - the quoting family of the terminal's shell.
  * @returns the command line, without a trailing newline.
  */
-export declare function shellCommandLine(script: string, args: readonly string[], platform: 'posix' | 'windows'): string;
+export declare function shellCommandLine(script: string, args: readonly string[], kind: ShellKind): string;
 /**
  * Keep the trailing part of a log, so a failure message stays readable.
  * @param text - full log.
