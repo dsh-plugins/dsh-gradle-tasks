@@ -29,7 +29,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npm run build:host && npm run build:client",
+    "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
+    "build": "npm run clean && npm run build:host && npm run build:client",
     "build:host": "tsc -p tsconfig.json",
     "build:client": "tsdown --config tsdown.client.config.mjs && tsc -p tsconfig.client.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
@@ -37,6 +38,14 @@
     "prepack": "npm run build"
   },
   "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsh-plugins/dsh-gradle-tasks.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dsh-plugins/dsh-gradle-tasks/issues"
+  },
+  "homepage": "https://github.com/dsh-plugins/dsh-gradle-tasks#readme",
   "keywords": [
     "deepseek-harness",
     "dsh",

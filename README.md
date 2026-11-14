@@ -1,6 +1,18 @@
+<div align="center">
+
+<img src="icon.svg" alt="dsh-gradle-tasks" width="72" height="72" />
+
 # dsh-gradle-tasks
 
-在 DSH 的**右侧边栏**增加一个「Gradle 任务」标签页：识别当前会话所在项目是否为 Gradle 工程，按任务声明的 `group` 分文件夹列出全部任务，双击任务即用项目自带的 wrapper 与选定的 JDK 运行，构建输出实时回传到面板内置终端。
+**在 DSH 右侧边栏浏览并运行 Gradle 任务：按 `group` 分文件夹、双击即在终端里执行、用项目自带 wrapper 与选定 JDK。**
+
+[![DSH Plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff)](https://github.com/topics/dsh-plugin)
+[![dsh](https://img.shields.io/badge/dsh-%E2%89%A50.2.2--rc.2%20%3C0.3.0-4f7cff)](#兼容版本)
+[![license](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
+
+</div>
+
+在 DSH 的**右侧边栏**增加一个「Gradle 任务」标签页：识别当前会话所在项目是否为 Gradle 工程，按任务声明的 `group` 分文件夹列出全部任务，双击任务即在 DSH 终端里用项目自带的 wrapper 与选定的 JDK 执行。
 
 面板以标签页形式挂在右侧边栏：右侧边栏的「开始」页会多出一张「Gradle 任务」卡片，点开即在侧栏内打开该页；同一个标签也可以在分屏或浮窗中打开。
 
@@ -46,10 +58,17 @@ npm test
 
 ## 安装
 
-通过 `plugin_manager` 安装本目录，或执行：
+从 Git 源安装（`lib/` 产物已随仓库提交，无需授权构建脚本）：
+
+```sh
+dsh plugin --profile web add "github:dsh-plugins/dsh-gradle-tasks"
+```
+
+也可以克隆后从本地目录安装，或在 DSH Web 的「插件」页安装：
 
 ```powershell
-dsh plugin --profile web add <本目录绝对路径>
+git clone https://github.com/dsh-plugins/dsh-gradle-tasks.git
+dsh plugin --profile web add <克隆下来的目录绝对路径>
 ```
 
 `cordis.patch.yml` 只插入一行宿主入口：
