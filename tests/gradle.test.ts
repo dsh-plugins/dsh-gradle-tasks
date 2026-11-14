@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { dirname, join, resolve, basename } from 'node:path'
 import { test } from 'node:test'
 import {
   collectConfigurationInputs,
@@ -20,17 +21,25 @@ import {
   type ProjectIo,
 } from '../src/gradle.ts'
 
+/** The build root the fixtures live under, in the host platform's own form. */
+const ROOT = resolve('/p')
+
+/** Join fixture path segments under {@link ROOT}. */
+function at(...segments: readonly string[]): string {
+  return join(ROOT, ...segments)
+}
+
 /** A fake filesystem: existing files keyed by exact path. */
 function ioOf(files: Record<string, string> = {}, directories: readonly string[] = []): ProjectIo {
   const entries = new Map<string, { name: string, isDirectory: boolean }[]>()
   for (const path of Object.keys(files)) {
-    const parent = path.slice(0, path.lastIndexOf('\\'))
-    const name = path.slice(path.lastIndexOf('\\') + 1)
+    const parent = dirname(path)
+    const name = basename(path)
     entries.set(parent, [...entries.get(parent) ?? [], { name, isDirectory: false }])
   }
   for (const path of directories) {
-    const parent = path.slice(0, path.lastIndexOf('\\'))
-    const name = path.slice(path.lastIndexOf('\\') + 1)
+    const parent = dirname(path)
+    const name = basename(path)
     entries.set(parent, [...entries.get(parent) ?? [], { name, isDirectory: true }])
     if (!entries.has(path)) entries.set(path, [])
   }
@@ -42,26 +51,26 @@ function ioOf(files: Record<string, string> = {}, directories: readonly string[]
 }
 
 test('findProjectRoot climbs to the directory that owns the build', () => {
-  const io = ioOf({ 'C:\\p\\settings.gradle.kts': '', 'C:\\p\\build.gradle.kts': '' })
-  assert.equal(findProjectRoot('C:\\p\\src\\main\\java', io), 'C:\\p')
+  const io = ioOf({ [at('settings.gradle.kts')]: '', [at('build.gradle.kts')]: '' })
+  assert.equal(findProjectRoot(at('src', 'main', 'java'), io), ROOT)
 })
 
 test('findProjectRoot reports absence when no ancestor holds a script', () => {
-  assert.equal(findProjectRoot('C:\\p\\src', ioOf()), null)
+  assert.equal(findProjectRoot(at('src'), ioOf()), null)
 })
 
 test('findProjectRoot stops at the first ancestor holding a build script', () => {
-  const io = ioOf({ 'C:\\p\\build.gradle': '' })
-  assert.equal(findProjectRoot('C:\\p\\app', io), 'C:\\p')
+  const io = ioOf({ [at('build.gradle')]: '' })
+  assert.equal(findProjectRoot(at('app'), io), ROOT)
 })
 
 test('describeProject reads the declared wrapper distribution', () => {
   const io = ioOf({
-    'C:\\p\\build.gradle.kts': '',
-    'C:\\p\\gradlew.bat': '',
-    'C:\\p\\gradle\\wrapper\\gradle-wrapper.properties': 'distributionUrl=https\\://example.test/gradle-9.1.0-bin.zip\n',
+    [at('build.gradle.kts')]: '',
+    [at('gradlew.bat')]: '',
+    [at('gradle', 'wrapper', 'gradle-wrapper.properties')]: 'distributionUrl=https\\://example.test/gradle-9.1.0-bin.zip\n',
   })
-  assert.equal(describeProject('C:\\p', io).wrapperDistribution, 'https\\://example.test/gradle-9.1.0-bin.zip')
+  assert.equal(describeProject(ROOT, io).wrapperDistribution, 'https\\://example.test/gradle-9.1.0-bin.zip')
 })
 
 test('parseTaskDump reads path, group, and description, keeping tabs inside a description', () => {
@@ -178,14 +187,20 @@ test('tailOf keeps the recent part of a long log and marks the omission', () => 
 
 test('collectConfigurationInputs finds scripts in subprojects and the version catalogue', () => {
   const io = ioOf({
-    'C:\\p\\settings.gradle.kts': 'root',
-    'C:\\p\\build.gradle.kts': 'root',
-    'C:\\p\\gradle.properties': 'org.gradle.jvmargs=-Xmx1g',
-    'C:\\p\\gradle\\libs.versions.toml': '[versions]',
-    'C:\\p\\app\\build.gradle.kts': 'sub',
-    'C:\\p\\app\\src\\main\\java\\A.java': 'class A {}',
-  }, ['C:\\p\\app', 'C:\\p\\gradle', 'C:\\p\\app\\src', 'C:\\p\\app\\src\\main', 'C:\\p\\app\\src\\main\\java'])
-  assert.deepEqual(collectConfigurationInputs('C:\\p', io).map(input => input.path).sort(), [
+    [at('settings.gradle.kts')]: 'root',
+    [at('build.gradle.kts')]: 'root',
+    [at('gradle.properties')]: 'org.gradle.jvmargs=-Xmx1g',
+    [at('gradle', 'libs.versions.toml')]: '[versions]',
+    [at('app', 'build.gradle.kts')]: 'sub',
+    [at('app', 'src', 'main', 'java', 'A.java')]: 'class A {}',
+  }, [
+    at('app'),
+    at('gradle'),
+    at('app', 'src'),
+    at('app', 'src', 'main'),
+    at('app', 'src', 'main', 'java'),
+  ])
+  assert.deepEqual(collectConfigurationInputs(ROOT, io).map(input => input.path).sort(), [
     'app/build.gradle.kts',
     'build.gradle.kts',
     'gradle.properties',
@@ -196,12 +211,19 @@ test('collectConfigurationInputs finds scripts in subprojects and the version ca
 
 test('collectConfigurationInputs prunes build outputs and editor state', () => {
   const io = ioOf({
-    'C:\\p\\build.gradle.kts': 'root',
-    'C:\\p\\build\\generated\\build.gradle': 'stale output',
-    'C:\\p\\.gradle\\caches\\build.gradle': 'cache',
-    'C:\\p\\node_modules\\x\\build.gradle': 'dependency',
-  }, ['C:\\p\\build', 'C:\\p\\build\\generated', 'C:\\p\\.gradle', 'C:\\p\\.gradle\\caches', 'C:\\p\\node_modules', 'C:\\p\\node_modules\\x'])
-  assert.deepEqual(collectConfigurationInputs('C:\\p', io).map(input => input.path), ['build.gradle.kts'])
+    [at('build.gradle.kts')]: 'root',
+    [at('build', 'generated', 'build.gradle')]: 'stale output',
+    [at('.gradle', 'caches', 'build.gradle')]: 'cache',
+    [at('node_modules', 'x', 'build.gradle')]: 'dependency',
+  }, [
+    at('build'),
+    at('build', 'generated'),
+    at('.gradle'),
+    at('.gradle', 'caches'),
+    at('node_modules'),
+    at('node_modules', 'x'),
+  ])
+  assert.deepEqual(collectConfigurationInputs(ROOT, io).map(input => input.path), ['build.gradle.kts'])
 })
 
 test('fingerprintConfiguration changes when any input content changes', () => {
