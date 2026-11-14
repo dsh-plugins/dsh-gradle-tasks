@@ -10,6 +10,13 @@
 [![dsh](https://img.shields.io/badge/dsh-%E2%89%A50.2.2--rc.2%20%3C0.3.0-4f7cff)](#兼容版本)
 [![license](https://img.shields.io/badge/license-LGPL--3.0--only-blue)](LICENSE)
 
+<a href="https://github.com/dsh-plugins/dsh-gradle-tasks/actions/workflows/npm-publish.yml">
+  <img src="https://github.com/dsh-plugins/dsh-gradle-tasks/actions/workflows/npm-publish.yml/badge.svg" alt="Build Status">
+</a>
+<a href="https://www.npmjs.com/package/@dsh-plugin/dsh-gradle-tasks">
+  <img src="https://img.shields.io/npm/v/@dsh-plugin/dsh-gradle-tasks.svg?sanitize=true" alt="Version">
+</a>
+
 </div>
 
 在 DSH 的**右侧边栏**增加一个「Gradle 任务」标签页：识别当前会话所在项目是否为 Gradle 工程，按任务声明的 `group` 分文件夹列出全部任务，双击任务即在 DSH 终端里用项目自带的 wrapper 与选定的 JDK 执行。
@@ -58,7 +65,13 @@ npm test
 
 ## 安装
 
-从 Git 源安装（`lib/` 产物已随仓库提交，无需授权构建脚本）：
+从 npm 安装（`next` 渠道的预发布版本加 `@next`，如 `@dsh-plugin/dsh-gradle-tasks@next`）：
+
+```sh
+dsh plugin --profile web add "@dsh-plugin/dsh-gradle-tasks"
+```
+
+也可以从 Git 源安装（`lib/` 产物已随仓库提交，无需授权构建脚本）：
 
 ```sh
 dsh plugin --profile web add "github:dsh-plugins/dsh-gradle-tasks"
