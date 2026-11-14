@@ -39,6 +39,22 @@ export interface GradleProjectInfo {
   readonly wrapperDistribution: string | null
 }
 
+/**
+ * One build root the workspace holds, named the way the tree shows it.
+ *
+ * A Session opened on a workspace of several repositories therefore gets one
+ * entry per repository instead of the single owning build the first version
+ * reported, and every subsequent request names the entry it means.
+ */
+export interface GradleProjectEntry extends GradleProjectInfo {
+  /** Display name: `rootProject.name` when the settings script declares one, else the directory name. */
+  readonly name: string
+  /** Directory relative to the Session's working directory, always with forward slashes; `.` for the directory itself. */
+  readonly relativePath: string
+  /** Subproject paths declared by the settings script, in declaration order; empty when it declares none. */
+  readonly modules: readonly string[]
+}
+
 /** One JDK discovered from the Host environment. */
 export interface JdkCandidate {
   /** Environment variable the JDK was read from, such as `JAVA_HOME` or `JAVA_21`. */
@@ -64,6 +80,7 @@ export type FailureCode =
   | 'directory-missing'
   | 'directory-relative'
   | 'not-gradle'
+  | 'project-not-found'
   | 'wrapper-mismatch'
   | 'gradle-missing'
   | 'scan-failed'
@@ -86,13 +103,15 @@ export interface FailureShape {
   readonly detail?: string
 }
 
-/** Answer to the panel's first request: what the directory is and which JDKs exist. */
+/** Answer to the panel's first request: which projects the directory holds and which JDKs exist. */
 export type StateResponse = {
   readonly ok: true
   /** Absolute directory the panel inspects — the Session's working directory. */
   readonly path: string
-  /** Detected project, or null when the directory is not inside a Gradle build. */
-  readonly project: GradleProjectInfo | null
+  /** Build roots found in or below that directory, in display order; empty when it holds none. */
+  readonly projects: readonly GradleProjectEntry[]
+  /** True when the discovery walk stopped at its budget and more projects may exist. */
+  readonly truncated?: boolean
   /** Every JDK found in the Host environment, best first. */
   readonly jdks: readonly JdkCandidate[]
 } | FailureShape
@@ -100,7 +119,8 @@ export type StateResponse = {
 /** Answer to a task-listing request. */
 export type TasksResponse = {
   readonly ok: true
-  readonly project: GradleProjectInfo
+  /** The build root this listing belongs to. */
+  readonly project: GradleProjectEntry
   /** Tasks bucketed by declared group, groups in display order. */
   readonly groups: readonly GradleTaskGroup[]
   /** How long producing this list took; a cache hit reports the original scan. */
@@ -112,8 +132,8 @@ export type TasksResponse = {
   /** When the list's scan finished, as epoch milliseconds. */
   readonly scannedAt: number
 } | (FailureShape & {
-  /** Project identified before the failure, when detection got that far. */
-  readonly project?: GradleProjectInfo
+  /** Build root the request named, echoed so the panel can attach the failure. */
+  readonly project?: GradleProjectEntry
   /** Tail of the Gradle output; present when a scan actually ran. */
   readonly output?: string
   readonly durationMs?: number

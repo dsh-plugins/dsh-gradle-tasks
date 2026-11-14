@@ -8,7 +8,7 @@
  */
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, join } from 'node:path'
-import type { GradleProjectInfo, GradleTask, GradleTaskGroup } from './shared/protocol.ts'
+import type { GradleProjectEntry, GradleProjectInfo, GradleTask, GradleTaskGroup } from './shared/protocol.ts'
 
 /** Build script file names Gradle accepts at a project root, in discovery order. */
 const BUILD_SCRIPTS = ['build.gradle.kts', 'build.gradle'] as const
@@ -133,6 +133,238 @@ function parseDistributionUrl(properties: string): string | null {
   return null
 }
 
+/** How deep below the Session directory discovery looks for build roots. */
+const MAX_DISCOVERY_DEPTH = 2
+
+/** How many build roots one workspace may report. */
+const MAX_WORKSPACE_PROJECTS = 200
+
+/** How many directories one discovery walk may enter. */
+const MAX_SCAN_DIRECTORIES = 5000
+
+/** One build root discovered below a workspace directory. */
+export interface DiscoveredProject {
+  /** Absolute build root, as the walk reached it. */
+  readonly rootDir: string
+  /** Path relative to the workspace directory, with forward slashes; `.` for the directory itself. */
+  readonly relativePath: string
+}
+
+/** What one discovery walk found, and whether its budget cut the walk short. */
+export interface Discovery {
+  readonly projects: readonly DiscoveredProject[]
+  /** True when a budget stopped the walk, so the list is incomplete. */
+  readonly truncated: boolean
+}
+
+/**
+ * Find every Gradle build root in a Session's workspace.
+ *
+ * A directory that is itself inside a build reports exactly that one build:
+ * opening `src/main/java` or `app/` names the build it belongs to, and reporting
+ * sibling repositories as well would misrepresent what the Session is about. A
+ * directory outside every build is treated as a workspace of repositories, so
+ * its descendants are walked to a small bounded depth — the layout of a folder
+ * holding several checkouts — and each build root met becomes one entry. The
+ * walk stops descending at a root, because everything below it belongs to that
+ * build rather than being a project of its own.
+ * @param startDir - absolute Session working directory.
+ * @param io - filesystem facts.
+ * @returns the discovered roots in display order, plus the truncation flag.
+ */
+export function discoverProjects(startDir: string, io: ProjectIo): Discovery {
+  const enclosing = findProjectRoot(startDir, io)
+  if (enclosing !== null) {
+    return { projects: [{ rootDir: enclosing, relativePath: relativePathOf(startDir, enclosing) }], truncated: false }
+  }
+  const found: DiscoveredProject[] = []
+  const seen = new Set<string>()
+  let visited = 0
+  let truncated = false
+  const walk = (directory: string, depth: number): void => {
+    if (truncated) return
+    if (depth > MAX_DISCOVERY_DEPTH) return
+    for (const entry of io.listDirectory(directory)) {
+      if (truncated) return
+      if (!entry.isDirectory) continue
+      if (DISCOVERY_PRUNED.has(entry.name)) continue
+      if (visited >= MAX_SCAN_DIRECTORIES) {
+        truncated = true
+        return
+      }
+      visited += 1
+      const path = join(directory, entry.name)
+      // Settings and build scripts are probed together: a directory holding
+      // either one is a build root, and both probes cost one stat each.
+      const isRoot = SETTINGS_SCRIPTS.some(name => io.isFile(join(path, name)))
+        || BUILD_SCRIPTS.some(name => io.isFile(join(path, name)))
+      if (isRoot) {
+        const key = pathKey(path)
+        if (found.length >= MAX_WORKSPACE_PROJECTS) {
+          truncated = true
+          return
+        }
+        if (!seen.has(key)) {
+          seen.add(key)
+          found.push({ rootDir: path, relativePath: relativePathOf(startDir, path) })
+        }
+        continue
+      }
+      walk(path, depth + 1)
+    }
+  }
+  walk(startDir, 0)
+  return { projects: sortProjects(found), truncated }
+}
+
+/** Order discovered roots by their workspace-relative path. */
+function sortProjects(projects: readonly DiscoveredProject[]): DiscoveredProject[] {
+  return [...projects].sort((left, right) =>
+    compareText(left.relativePath, right.relativePath) || compareText(left.rootDir, right.rootDir))
+}
+
+/**
+ * The path of `target` relative to `base`, with forward slashes.
+ *
+ * Segments compare the way the platform compares them — case-insensitively on
+ * Windows, where the two spellings of one directory must still cancel out — but
+ * the result keeps the spelling of `target`, because this is what the panel
+ * shows a person and folding its case would misname their own directories.
+ * @param base - directory the result is relative to.
+ * @param target - absolute path to express.
+ * @returns the relative path, or `.` when both name the same directory.
+ */
+export function relativePathOf(base: string, target: string): string {
+  const split = (path: string): string[] => path
+    .replaceAll('\\', '/')
+    .split('/')
+    .filter(part => part !== '' && part !== '.')
+  const from = split(base).map(part => part.toLowerCase())
+  const to = split(target)
+  let shared = 0
+  while (shared < from.length && shared < to.length && from[shared] === to[shared]?.toLowerCase()) shared += 1
+  const up = new Array<string>(from.length - shared).fill('..')
+  const joined = [...up, ...to.slice(shared)].join('/')
+  return joined === '' ? '.' : joined
+}
+
+/**
+ * A comparable form of an absolute path.
+ *
+ * Windows compares paths case-insensitively and accepts either separator, so
+ * both spellings of one directory must collapse to the same key; a trailing
+ * separator never distinguishes two directories.
+ * @param path - absolute path.
+ * @returns the comparison key.
+ */
+export function pathKey(path: string): string {
+  return path.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
+}
+
+/**
+ * Read `rootProject.name` from a settings script.
+ *
+ * Both DSLs spell the assignment the same way, so one pattern covers them; the
+ * value may be single- or double-quoted. A value that still holds a template
+ * placeholder — `rootProject.name = "${mod_id}"` is how many multi-loader mod
+ * builds name themselves, with the real name assigned later — is treated as no
+ * declaration at all: showing the placeholder would name every such project
+ * `${mod_id}`, which is worse than the directory it already sits in.
+ * @param text - settings script content.
+ * @returns the declared name, or null when the script declares none.
+ */
+export function readRootProjectName(text: string): string | null {
+  const match = /^\s*rootProject\.name\s*=\s*(['"])(.+?)\1\s*;?\s*$/m.exec(text)
+  const name = match?.[2]?.trim()
+  if (name === undefined || name === '' || /\$(?:\{|[A-Za-z_])/.test(name)) return null
+  return name
+}
+
+/**
+ * Read the subproject paths a settings script declares.
+ *
+ * Settings scripts can include projects dynamically, so this list is a display
+ * hint — the count a folded project row shows before its build is configured —
+ * and never the authority on which modules exist. A leading colon is dropped so
+ * the result matches the project paths task paths carry.
+ * @param text - settings script content.
+ * @returns declared project paths such as `app`, in declaration order.
+ */
+export function readDeclaredModules(text: string): string[] {
+  const modules: string[] = []
+  const seen = new Set<string>()
+  // `\binclude\b` keeps `includeGroup("…")` and `includeBuild(…)` out: their
+  // next character is a word character, so there is no boundary to match. The
+  // arguments stop at a closing paren or the end of the line, which covers both
+  // `include(":app")` and the parenthesised list form.
+  const call = /\binclude\b\s*\(?([^\n)]*)/g
+  for (const match of text.matchAll(call)) {
+    const args = match[1] ?? ''
+    // Only quoted literals count: a computed argument tells us nothing here.
+    for (const literal of args.matchAll(/(['"])(.+?)\1/g)) {
+      const path = (literal[2] ?? '').trim().replace(/^:+/, '')
+      if (path === '' || seen.has(path)) continue
+      seen.add(path)
+      modules.push(path)
+    }
+  }
+  return modules
+}
+
+/**
+ * Describe one discovered build root as the panel shows it.
+ * @param rootDir - absolute build root.
+ * @param relativePath - root path relative to the workspace directory.
+ * @param io - filesystem facts.
+ * @returns the project entry.
+ */
+export function describeProjectEntry(rootDir: string, relativePath: string, io: ProjectIo): GradleProjectEntry {
+  const project = describeProject(rootDir, io)
+  const settings = SETTINGS_SCRIPTS
+    .map(name => io.readText(join(rootDir, name)))
+    .find(text => text !== undefined)
+  return {
+    ...project,
+    name: (settings === undefined ? null : readRootProjectName(settings)) ?? baseNameOf(rootDir),
+    relativePath,
+    modules: settings === undefined ? [] : readDeclaredModules(settings),
+  }
+}
+
+/**
+ * The last path segment of a directory, which is the display name a build
+ * without a declared `rootProject.name` falls back to.
+ *
+ * The segment keeps its own spelling: this is the name a person reads in the
+ * tree, and folding it would misname their directory.
+ * @param path - absolute directory.
+ * @returns the segment, or the path itself when it names a root.
+ */
+export function baseNameOf(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const index = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return index < 0 ? trimmed : trimmed.slice(index + 1)
+}
+
+/**
+ * The project entry a request names, or null when the workspace does not hold it.
+ *
+ * The name reaches a command line as the directory a build runs in, so it is
+ * resolved against the discovered list instead of being used as a path: a
+ * Session can only ever act on a build root its own workspace contains.
+ * @param projects - entries returned by {@link discoverProjects} + {@link describeProjectEntry}.
+ * @param requested - absolute root path the request named, or null to leave the choice to the caller.
+ * @returns the matching entry, or null when none matches.
+ */
+export function selectProject(
+  projects: readonly GradleProjectEntry[],
+  requested: string | null,
+): GradleProjectEntry | null {
+  if (requested === null || requested.trim() === '') return projects.length === 1 ? projects[0] ?? null : null
+  const key = pathKey(requested)
+  return projects.find(project => pathKey(project.rootDir) === key) ?? null
+}
+
 /**
  * Parse the task report an initialization script writes.
  *
@@ -169,6 +401,81 @@ export function parseTaskDump(text: string): GradleTask[] {
 export function projectPathOf(taskPath: string): string {
   const index = taskPath.lastIndexOf(':')
   return index <= 0 ? ':' : taskPath.slice(0, index)
+}
+
+/**
+ * Parse the report Gradle's own `tasks --all` prints.
+ *
+ * This is the fallback for a build the initialization script cannot describe.
+ * Gradle 9 refuses configuration resolution that happens outside a lock, and
+ * some convention plugins resolve during task realization, so the script's
+ * traversal of every project fails where Gradle's own report — which realizes
+ * tasks inside a real task run — succeeds.
+ *
+ * The report is a series of `<Group> tasks` headings, each underlined with
+ * dashes, followed by `<path> - <description>` lines; a task inside a
+ * subproject is printed as `sub:task`, and a task of the root project carries no
+ * prefix. `--console=plain` keeps the layout free of progress rewriting, and
+ * Gradle's report strings stay in English whatever the JVM locale.
+ * @param text - the `tasks --all` output.
+ * @returns every task it listed, with the group each heading declares.
+ */
+export function parseTaskReport(text: string): GradleTask[] {
+  const tasks: GradleTask[] = []
+  const lines = text.split(/\r?\n/)
+  let group: string | null = null
+  let previous = ''
+  for (const raw of lines) {
+    const line = raw.trimEnd()
+    // A heading is underlined with dashes; the line above it names the bucket.
+    if (/^-{3,}$/.test(line.trim())) {
+      const heading = previous.trim()
+      group = heading === '' ? null : groupNameOf(heading)
+      previous = ''
+      continue
+    }
+    if (group !== null && line.trim() !== '') {
+      const parsed = taskReportRow(line)
+      if (parsed !== null) tasks.push({ ...parsed, group })
+    }
+    previous = line
+  }
+  return tasks
+}
+
+/**
+ * The Gradle group a report heading declares: `Build tasks` is `build`, and the
+ * bucket for tasks that declare no group is the empty string.
+ * @param heading - the heading line above an underline.
+ * @returns the group name.
+ */
+function groupNameOf(heading: string): string {
+  const named = /^(.*?)\s+tasks?$/i.exec(heading)
+  if (named === null) return heading
+  const name = (named[1] ?? '').trim()
+  return /^other$/i.test(name) ? '' : name
+}
+
+/**
+ * One task row of the `tasks --all` report.
+ *
+ * A row is a task path, optionally followed by ` - ` and a description. Anything
+ * that is not a well-formed path — prose, a pattern rule, a banner — is not a
+ * row: the paths this build accepts are already fixed by {@link isTaskPath}.
+ * @param line - one report line.
+ * @returns the task with an absolute path, or null when the line is not a row.
+ */
+function taskReportRow(line: string): { path: string, project: string, description: string } | null {
+  const separator = line.indexOf(' - ')
+  const rawPath = (separator < 0 ? line : line.slice(0, separator)).trim()
+  // The report prints a root-project task as `build` and a subproject task as
+  // `sub:build`, so the leading colon is added here rather than required.
+  const bare = rawPath.replace(/^:+/, '')
+  if (!/^[\w.-]+(?::[\w.-]+)*$/.test(bare)) return null
+  const path = `:${bare}`
+  if (!isTaskPath(path)) return null
+  const description = separator < 0 ? '' : line.slice(separator + 3).trim()
+  return { path, project: projectPathOf(path), description }
 }
 
 /**
@@ -298,6 +605,20 @@ export function isTaskPath(taskPath: string): boolean {
 const PRUNED_DIRECTORIES = new Set([
   'build', 'out', 'target', 'bin', 'obj', 'node_modules', 'vendor',
   '.git', '.gradle', '.idea', '.vscode', '.settings',
+])
+
+/**
+ * Directory names discovery never enters.
+ *
+ * The configuration walk's list already covers build output, dependencies, and
+ * editor state; discovery adds a few more generated-output and checkout-furniture
+ * names, because a build rooted inside one of them is generated or vendored
+ * rather than a repository somebody opens the workspace to build.
+ */
+const DISCOVERY_PRUNED = new Set([
+  ...PRUNED_DIRECTORIES,
+  'dist', 'coverage', 'tmp', 'temp', '.next', '.nuxt', '.output',
+  '.hg', '.svn', '.cache',
 ])
 
 /**

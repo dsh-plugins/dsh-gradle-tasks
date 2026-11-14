@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Gradle Tasks",
-    "description": "Browse every task of the current Gradle project in the right Sidebar, grouped into folders by the group each task declares; double-click one to run it with the project wrapper and a chosen JDK, with the build output streamed back into the panel terminal."
+    "description": "Browse every Gradle project of the current workspace in the right Sidebar, IDEA style: project → subproject → group → task, configuring a project only when it is opened; double-click a task to run it in a terminal with the project wrapper and a chosen JDK."
   }
 }

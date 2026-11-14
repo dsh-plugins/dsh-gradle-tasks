@@ -1,4 +1,4 @@
-import type { GradleProjectInfo, GradleTask, GradleTaskGroup } from './shared/protocol.ts';
+import type { GradleProjectEntry, GradleProjectInfo, GradleTask, GradleTaskGroup } from './shared/protocol.ts';
 /**
  * The initialization script that reports every configured task.
  *
@@ -47,6 +47,110 @@ export declare function findProjectRoot(startDir: string, io: ProjectIo): string
  * @returns the project description; `buildFiles` is empty for a settings-only root.
  */
 export declare function describeProject(rootDir: string, io: ProjectIo): GradleProjectInfo;
+/** One build root discovered below a workspace directory. */
+export interface DiscoveredProject {
+    /** Absolute build root, as the walk reached it. */
+    readonly rootDir: string;
+    /** Path relative to the workspace directory, with forward slashes; `.` for the directory itself. */
+    readonly relativePath: string;
+}
+/** What one discovery walk found, and whether its budget cut the walk short. */
+export interface Discovery {
+    readonly projects: readonly DiscoveredProject[];
+    /** True when a budget stopped the walk, so the list is incomplete. */
+    readonly truncated: boolean;
+}
+/**
+ * Find every Gradle build root in a Session's workspace.
+ *
+ * A directory that is itself inside a build reports exactly that one build:
+ * opening `src/main/java` or `app/` names the build it belongs to, and reporting
+ * sibling repositories as well would misrepresent what the Session is about. A
+ * directory outside every build is treated as a workspace of repositories, so
+ * its descendants are walked to a small bounded depth — the layout of a folder
+ * holding several checkouts — and each build root met becomes one entry. The
+ * walk stops descending at a root, because everything below it belongs to that
+ * build rather than being a project of its own.
+ * @param startDir - absolute Session working directory.
+ * @param io - filesystem facts.
+ * @returns the discovered roots in display order, plus the truncation flag.
+ */
+export declare function discoverProjects(startDir: string, io: ProjectIo): Discovery;
+/**
+ * The path of `target` relative to `base`, with forward slashes.
+ *
+ * Segments compare the way the platform compares them — case-insensitively on
+ * Windows, where the two spellings of one directory must still cancel out — but
+ * the result keeps the spelling of `target`, because this is what the panel
+ * shows a person and folding its case would misname their own directories.
+ * @param base - directory the result is relative to.
+ * @param target - absolute path to express.
+ * @returns the relative path, or `.` when both name the same directory.
+ */
+export declare function relativePathOf(base: string, target: string): string;
+/**
+ * A comparable form of an absolute path.
+ *
+ * Windows compares paths case-insensitively and accepts either separator, so
+ * both spellings of one directory must collapse to the same key; a trailing
+ * separator never distinguishes two directories.
+ * @param path - absolute path.
+ * @returns the comparison key.
+ */
+export declare function pathKey(path: string): string;
+/**
+ * Read `rootProject.name` from a settings script.
+ *
+ * Both DSLs spell the assignment the same way, so one pattern covers them; the
+ * value may be single- or double-quoted. A value that still holds a template
+ * placeholder — `rootProject.name = "${mod_id}"` is how many multi-loader mod
+ * builds name themselves, with the real name assigned later — is treated as no
+ * declaration at all: showing the placeholder would name every such project
+ * `${mod_id}`, which is worse than the directory it already sits in.
+ * @param text - settings script content.
+ * @returns the declared name, or null when the script declares none.
+ */
+export declare function readRootProjectName(text: string): string | null;
+/**
+ * Read the subproject paths a settings script declares.
+ *
+ * Settings scripts can include projects dynamically, so this list is a display
+ * hint — the count a folded project row shows before its build is configured —
+ * and never the authority on which modules exist. A leading colon is dropped so
+ * the result matches the project paths task paths carry.
+ * @param text - settings script content.
+ * @returns declared project paths such as `app`, in declaration order.
+ */
+export declare function readDeclaredModules(text: string): string[];
+/**
+ * Describe one discovered build root as the panel shows it.
+ * @param rootDir - absolute build root.
+ * @param relativePath - root path relative to the workspace directory.
+ * @param io - filesystem facts.
+ * @returns the project entry.
+ */
+export declare function describeProjectEntry(rootDir: string, relativePath: string, io: ProjectIo): GradleProjectEntry;
+/**
+ * The last path segment of a directory, which is the display name a build
+ * without a declared `rootProject.name` falls back to.
+ *
+ * The segment keeps its own spelling: this is the name a person reads in the
+ * tree, and folding it would misname their directory.
+ * @param path - absolute directory.
+ * @returns the segment, or the path itself when it names a root.
+ */
+export declare function baseNameOf(path: string): string;
+/**
+ * The project entry a request names, or null when the workspace does not hold it.
+ *
+ * The name reaches a command line as the directory a build runs in, so it is
+ * resolved against the discovered list instead of being used as a path: a
+ * Session can only ever act on a build root its own workspace contains.
+ * @param projects - entries returned by {@link discoverProjects} + {@link describeProjectEntry}.
+ * @param requested - absolute root path the request named, or null to leave the choice to the caller.
+ * @returns the matching entry, or null when none matches.
+ */
+export declare function selectProject(projects: readonly GradleProjectEntry[], requested: string | null): GradleProjectEntry | null;
 /**
  * Parse the task report an initialization script writes.
  *
@@ -65,6 +169,24 @@ export declare function parseTaskDump(text: string): GradleTask[];
  * @returns the owning project path.
  */
 export declare function projectPathOf(taskPath: string): string;
+/**
+ * Parse the report Gradle's own `tasks --all` prints.
+ *
+ * This is the fallback for a build the initialization script cannot describe.
+ * Gradle 9 refuses configuration resolution that happens outside a lock, and
+ * some convention plugins resolve during task realization, so the script's
+ * traversal of every project fails where Gradle's own report — which realizes
+ * tasks inside a real task run — succeeds.
+ *
+ * The report is a series of `<Group> tasks` headings, each underlined with
+ * dashes, followed by `<path> - <description>` lines; a task inside a
+ * subproject is printed as `sub:task`, and a task of the root project carries no
+ * prefix. `--console=plain` keeps the layout free of progress rewriting, and
+ * Gradle's report strings stay in English whatever the JVM locale.
+ * @param text - the `tasks --all` output.
+ * @returns every task it listed, with the group each heading declares.
+ */
+export declare function parseTaskReport(text: string): GradleTask[];
 /**
  * Bucket tasks by their declared group and order both levels for display.
  *

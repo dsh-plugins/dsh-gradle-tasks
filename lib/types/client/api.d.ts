@@ -15,6 +15,8 @@ export declare class TransportFailure extends Error {
 /** What the panel asks about: one Session, and the options for this request. */
 export interface SessionQuery {
     readonly sessionId: string;
+    /** Build root the request is about; the Host resolves it against the Session's own workspace. */
+    readonly project?: string | null;
     readonly javaHome?: string | null;
     /** Add `--offline` to the Gradle invocation. */
     readonly offline?: boolean;
@@ -27,7 +29,7 @@ export declare function fetchState(sessionId: string): Promise<StateResponse>;
 export declare function fetchTasks(query: SessionQuery): Promise<TasksResponse>;
 /**
  * Type one task into the Session's terminal.
- * @param query - the Session, the JDK, and the offline choice.
+ * @param query - the Session, the build root, the JDK, and the offline choice.
  * @param taskPath - fully qualified task to run.
  * @param openTerminalIds - terminals the window currently shows, so a run can
  *   continue in the one this plugin already opened instead of opening another.

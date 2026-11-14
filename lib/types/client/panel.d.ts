@@ -1,6 +1,13 @@
 /**
- * The Gradle Tasks page: the JDK selector and two icon controls, the task
- * folders, and one line describing what the last run did.
+ * The Gradle Tasks page: the JDK selector and two icon controls, then the
+ * workspace's build roots as a tree — each one's groups, its subprojects, and
+ * their tasks — and one line describing what the last run did.
+ *
+ * The page deliberately scans lazily. A workspace can hold dozens of
+ * repositories, and configuring a Gradle build costs seconds to minutes, so
+ * opening the page only lists what the filesystem shows; a build is configured
+ * the first time its node is opened, and its report is cached per build root
+ * from then on.
  *
  * The panel shows no build output of its own: a task runs in a real Session
  * terminal, which the Sidebar shows as its own tab, so the person keeps the

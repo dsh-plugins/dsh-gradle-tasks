@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Gradle 任务",
-    "description": "在右侧边栏浏览当前 Gradle 项目的全部任务，按声明的 group 分文件夹展示；双击任务即可用项目 wrapper 和选定的 JDK 运行，输出实时回传到面板终端。"
+    "description": "在右侧边栏按 IDEA 的样式浏览当前工作区的全部 Gradle 项目：项目 → 子模块 → 分组 → 任务，展开某个项目时才为它执行一次 Gradle 配置；双击任务即可用项目自带的 wrapper 与选定的 JDK 在终端里运行。"
   }
 }

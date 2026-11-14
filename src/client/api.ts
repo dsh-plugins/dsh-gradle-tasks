@@ -44,6 +44,8 @@ async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
 /** What the panel asks about: one Session, and the options for this request. */
 export interface SessionQuery {
   readonly sessionId: string
+  /** Build root the request is about; the Host resolves it against the Session's own workspace. */
+  readonly project?: string | null
   readonly javaHome?: string | null
   /** Add `--offline` to the Gradle invocation. */
   readonly offline?: boolean
@@ -54,6 +56,7 @@ export interface SessionQuery {
 /** Build a route URL from the query's present fields. */
 function url(route: string, query: SessionQuery): string {
   const params = new URLSearchParams({ sessionId: query.sessionId })
+  if (query.project !== null && query.project !== undefined) params.set('project', query.project)
   if (query.javaHome !== null && query.javaHome !== undefined) params.set('javaHome', query.javaHome)
   if (query.offline === true) params.set('offline', '1')
   if (query.force === true) params.set('force', '1')
@@ -72,7 +75,7 @@ export function fetchTasks(query: SessionQuery): Promise<TasksResponse> {
 
 /**
  * Type one task into the Session's terminal.
- * @param query - the Session, the JDK, and the offline choice.
+ * @param query - the Session, the build root, the JDK, and the offline choice.
  * @param taskPath - fully qualified task to run.
  * @param openTerminalIds - terminals the window currently shows, so a run can
  *   continue in the one this plugin already opened instead of opening another.
@@ -87,6 +90,7 @@ export function startTaskRun(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       sessionId: query.sessionId,
+      project: query.project ?? undefined,
       taskPath,
       javaHome: query.javaHome ?? undefined,
       offline: query.offline === true,

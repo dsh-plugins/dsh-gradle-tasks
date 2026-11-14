@@ -15,13 +15,16 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   collectConfigurationInputs,
-  describeProject,
-  findProjectRoot,
+  describeProjectEntry,
+  discoverProjects,
   fingerprintConfiguration,
   gradleArgv,
   groupTasks,
   isTaskPath,
   parseTaskDump,
+  parseTaskReport,
+  pathKey,
+  selectProject,
   shellCommandLine,
   shellKindOf,
   TASK_DUMP_SCRIPT,
@@ -34,7 +37,8 @@ import { CACHE_VERSION, readTaskCache, writeTaskCache } from './cache.ts'
 import {
   ROUTE_BASE,
   type FailureCode,
-  type GradleProjectInfo,
+  type GradleProjectEntry,
+  type GradleTaskGroup,
   type JdkCandidate,
   type RunResponse,
   type StateResponse,
@@ -211,9 +215,11 @@ const projectIo: ProjectIo = {
   },
 }
 
-/** Terminals this plugin opened, so the next run continues in the same one. */
+/** One build terminal this plugin opened, so the next run for that build continues in it. */
 interface TerminalRecord {
   readonly sessionId: string
+  /** Build root the terminal was opened for. */
+  readonly rootDir: string
   readonly handle: AgentTerminalHandle
 }
 
@@ -245,11 +251,12 @@ export function apply(ctx: Context): void {
       if (req.method !== 'GET') { sendMethodNotAllowed(res, 'GET'); return }
       try {
         const path = sessionDirectory(host, queryOf(req).get('sessionId'))
-        const root = findProjectRoot(path, projectIo)
+        const discovery = discoverProjects(path, projectIo)
         const state: StateResponse = {
           ok: true,
           path,
-          project: root === null ? null : describeProject(root, projectIo),
+          projects: discovery.projects.map(project => describeProjectEntry(project.rootDir, project.relativePath, projectIo)),
+          ...discovery.truncated && { truncated: true },
           jdks: scanJdks(),
         }
         sendJson(res, 200, state)
@@ -268,9 +275,10 @@ export function apply(ctx: Context): void {
       try {
         const query = queryOf(req)
         const path = sessionDirectory(host, query.get('sessionId'))
+        const project = requireProject(path, query.get('project'))
         sendJson(res, 200, await listTasks({
           host,
-          path,
+          project,
           platform: await platform(),
           javaHome: checkedJavaHome(query.get('javaHome')),
           offline: query.get('offline') === '1',
@@ -296,6 +304,7 @@ export function apply(ctx: Context): void {
           host,
           terminals,
           sessionId: requiredString(body, 'sessionId'),
+          project: stringField(body, 'project'),
           taskPath: requiredString(body, 'taskPath'),
           javaHome: checkedJavaHome(stringField(body, 'javaHome')),
           offline: body.offline === true,
@@ -411,6 +420,30 @@ function isDirectory(path: string): boolean {
 }
 
 /**
+ * The build root a request names, resolved against this Session's own workspace.
+ *
+ * The named path is matched against the discovered roots rather than used
+ * directly: a Caller may only build something the workspace actually holds, and
+ * an ambiguity is reported instead of guessed at, because silently picking one
+ * of several repositories would run a build somewhere the person never pointed
+ * at.
+ * @param directory - the Session's working directory.
+ * @param requested - absolute root path named by the request, or null.
+ * @returns the matching entry.
+ */
+function requireProject(directory: string, requested: string | null): GradleProjectEntry {
+  const discovery = discoverProjects(directory, projectIo)
+  if (discovery.projects.length === 0) throw new RouteFailure('not-gradle', directory)
+  const entries = discovery.projects.map(project => describeProjectEntry(project.rootDir, project.relativePath, projectIo))
+  const chosen = selectProject(entries, requested)
+  if (chosen !== null) return chosen
+  if (requested === null || requested.trim() === '') {
+    throw new RouteFailure('project-not-found', `${directory} holds ${entries.length} projects; name one`)
+  }
+  throw new RouteFailure('project-not-found', requested)
+}
+
+/**
  * Pick the command that runs Gradle for a project: the project's own wrapper
  * first, because the build was authored against that distribution, and the
  * `gradle` executable on `PATH` only when the project ships no wrapper.
@@ -421,7 +454,7 @@ function isDirectory(path: string): boolean {
  */
 async function resolveScript(
   host: HostContext,
-  project: GradleProjectInfo,
+  project: GradleProjectEntry,
   platform: 'posix' | 'windows',
 ): Promise<string> {
   const wrapper = wrapperScriptFor(project, platform)
@@ -438,8 +471,8 @@ async function resolveScript(
 /** Everything one task listing needs, gathered so the function stays readable. */
 interface ListInput {
   readonly host: HostContext
-  /** Directory the panel inspected. */
-  readonly path: string
+  /** Build root the request resolved to. */
+  readonly project: GradleProjectEntry
   readonly platform: 'posix' | 'windows'
   readonly javaHome: string | null
   /** Add `--offline`, so Gradle neither downloads nor checks for updates. */
@@ -455,15 +488,14 @@ interface ListInput {
  *
  * A cached list is returned when every configuration input still has the same
  * content and the platform and JDK are unchanged, because only then can the
- * previous scan be trusted to describe the same set of tasks.
+ * previous scan be trusted to describe the same set of tasks. The cache lives
+ * inside each build root, so several projects in one workspace never share an
+ * entry.
  * @param input - the scan request.
  * @returns the grouped task report.
  */
 async function listTasks(input: ListInput): Promise<TasksResponse> {
-  const { host, path, platform, javaHome, offline, force, scratch, scriptPath } = input
-  const root = findProjectRoot(path, projectIo)
-  if (root === null) throw new RouteFailure('not-gradle', path)
-  const project = describeProject(root, projectIo)
+  const { host, project, platform, javaHome, offline, force, scratch, scriptPath } = input
   const fingerprint = fingerprintConfiguration(
     CACHE_VERSION,
     collectConfigurationInputs(project.rootDir, projectIo),
@@ -503,11 +535,9 @@ async function listTasks(input: ListInput): Promise<TasksResponse> {
   const durationMs = Date.now() - started
   if (outcome.timedOut) throw new RouteFailure('scan-timeout', tailOf(outcome.output, OUTPUT_TAIL_CHARS))
   const report = takeReport(reportPath)
-  if (report === null) {
-    const code = outcome.code === 0 ? 'no-report' : 'scan-failed'
-    throw new RouteFailure(code, `${String(outcome.code ?? '?')}\n${tailOf(outcome.output, OUTPUT_TAIL_CHARS)}`)
-  }
-  const groups = groupTasks(parseTaskDump(report))
+  const groups = report === null
+    ? await reportAsTasks(input, script)
+    : groupTasks(parseTaskDump(report))
   const scannedAt = Date.now()
   writeTaskCache(project.rootDir, { version: CACHE_VERSION, fingerprint, javaHome, groups, scannedAt, durationMs })
   return {
@@ -519,6 +549,42 @@ async function listTasks(input: ListInput): Promise<TasksResponse> {
     cached: false,
     scannedAt,
   }
+}
+
+/**
+ * Read the task list from Gradle's own report instead of the initialization
+ * script's dump.
+ *
+ * The dump traverses every project's tasks while the build is being configured,
+ * which Gradle 9 rejects for any convention plugin that resolves a configuration
+ * during task creation. Gradle's `tasks --all` realizes tasks inside a real task
+ * run, where the locks exist, so it is the second attempt — not the first,
+ * because it walks more of the build and its text has to be parsed.
+ * @param input - the scan request.
+ * @param script - the resolved Gradle executable or wrapper.
+ * @returns the grouped tasks.
+ */
+async function reportAsTasks(input: ListInput, script: string): Promise<GradleTaskGroup[]> {
+  const { host, project, platform, javaHome, offline } = input
+  const outcome = await collect(host, {
+    argv: gradleArgv({ path: script }, [
+      '--quiet', '--console=plain',
+      ...offline ? ['--offline'] : [],
+      '-p', project.rootDir,
+      'tasks', '--all',
+    ], platform),
+    cwd: project.rootDir,
+    env: javaEnvironment(javaHome),
+    timeoutMs: LIST_TIMEOUT_MS,
+  })
+  if (outcome.timedOut) throw new RouteFailure('scan-timeout', tailOf(outcome.output, OUTPUT_TAIL_CHARS))
+  const tasks = parseTaskReport(outcome.output)
+  if (tasks.length === 0) {
+    const code = outcome.code === 0 ? 'no-report' : 'scan-failed'
+    throw new RouteFailure(code, `${String(outcome.code ?? '?')}
+${tailOf(outcome.output, OUTPUT_TAIL_CHARS)}`)
+  }
+  return groupTasks(tasks)
 }
 
 /** Read the task report and remove the temporary file Gradle wrote. */
@@ -593,6 +659,8 @@ interface RunInput {
   readonly host: HostContext
   readonly terminals: Map<string, TerminalRecord>
   readonly sessionId: string
+  /** Build root the request resolved to, or null to let a single-project workspace decide. */
+  readonly project: string | null
   readonly taskPath: string
   readonly javaHome: string | null
   readonly offline: boolean
@@ -604,9 +672,12 @@ interface RunInput {
 /**
  * Type one Gradle task into the Session's terminal.
  *
- * The terminal is reused while this plugin still holds its handle, the person
- * has not taken it over, and a tab for it is open; otherwise a new one is
- * opened, which the Sidebar then shows as its own tab.
+ * The terminal is reused per build root while this plugin still holds its
+ * handle, the person has not taken it over, and a tab for it is open; otherwise
+ * a new one is opened, which the Sidebar then shows as its own tab. Keying the
+ * record by root as well as Session is what lets a workspace of several
+ * repositories keep one terminal per repository: switching to another project
+ * starts its own terminal, and switching back continues in the original one.
  * @param input - the run request.
  * @returns the terminal the command went to.
  */
@@ -614,9 +685,7 @@ async function runTask(input: RunInput): Promise<RunResponse> {
   const { host, terminals, sessionId, taskPath, javaHome, offline, openTerminalIds, platform } = input
   if (!isTaskPath(taskPath)) throw new RouteFailure('task-missing', taskPath)
   const directory = sessionDirectory(host, sessionId)
-  const root = findProjectRoot(directory, projectIo)
-  if (root === null) throw new RouteFailure('not-gradle', directory)
-  const project = describeProject(root, projectIo)
+  const project = requireProject(directory, input.project)
   const script = await resolveScript(host, project, platform)
 
   const agent = host.agents.get(sessionId)
@@ -624,7 +693,8 @@ async function runTask(input: RunInput): Promise<RunResponse> {
   const session = host.sessions.get(sessionId)
   if (session === undefined) throw new RouteFailure('session-inactive', sessionId)
 
-  const reusable = reusableTerminal(terminals.get(sessionId), openTerminalIds, project.rootDir)
+  const key = terminalKey(sessionId, project.rootDir)
+  const reusable = reusableTerminal(terminals.get(key), openTerminalIds, project.rootDir)
   const terminal = reusable ?? await openTerminal(host, {
     agent,
     session,
@@ -633,7 +703,7 @@ async function runTask(input: RunInput): Promise<RunResponse> {
     env: javaEnvironment(javaHome),
     platform,
   })
-  terminals.set(sessionId, { sessionId, handle: terminal })
+  terminals.set(key, { sessionId, rootDir: project.rootDir, handle: terminal })
 
   // The command is quoted for the shell the terminal actually started, not for
   // the platform: a `cmd.exe` terminal reads `&` as a command separator.
@@ -650,6 +720,20 @@ async function runTask(input: RunInput): Promise<RunResponse> {
     command,
     taskPath,
   }
+}
+
+/**
+ * The record key of one build terminal.
+ *
+ * A Session may build several repositories, and each of them wants its own
+ * terminal sitting in its own directory; the key is therefore the pair, with
+ * the directory normalized the way path comparison elsewhere normalizes it.
+ * @param sessionId - owning Session.
+ * @param rootDir - the build root the terminal belongs to.
+ * @returns the map key.
+ */
+function terminalKey(sessionId: string, rootDir: string): string {
+  return `${sessionId}\u0000${pathKey(rootDir)}`
 }
 
 /**
