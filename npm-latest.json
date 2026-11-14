@@ -1,0 +1,10 @@
+{
+  "name": "@dsh-plugin/dsh-gradle-tasks",
+  "latest": "0.0.1",
+  "publishedAt": "2026-11-14T11:08:29.653Z",
+  "dist": {
+    "tarball": "https://registry.npmjs.org/@dsh-plugin/dsh-gradle-tasks/-/dsh-gradle-tasks-0.0.1.tgz",
+    "integrity": "sha512-9qhEKq8hfOLhVY2BdhqzkJSypCFnGrf8T4HO9yhHU+0s/N4EaC4sU1X+Sag+o/jnz/32vncEkuBjDEQ1WVoHog==",
+    "unpackedSize": 276459
+  }
+}
